@@ -14,6 +14,7 @@ from .chat import ChatSession
 from .config import get_config, get_config_dir
 from .shell import execute_shell_command, is_shell_command, extract_command
 from .prompts import get_prompt_manager
+from .smart_git import SmartGitWorkflow
 
 # Rich console for beautiful output
 console = Console()
@@ -188,6 +189,9 @@ async def _chat_async() -> None:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
     
+    # Initialize smart git workflow
+    smart_git = SmartGitWorkflow(console, session)
+    
     # Welcome message
     console.print(Panel.fit(
         f"[bold blue]Welcome to Sun CLI[/bold blue]\n"
@@ -219,6 +223,10 @@ async def _chat_async() -> None:
                     execute_shell_command(shell_cmd, console)
                     continue
                 
+                # Check for smart git workflow intent
+                if await smart_git.handle_intent(user_input):
+                    continue
+                
                 # Handle built-in commands (start with /)
                 if user_input.startswith("/"):
                     if user_input == "/help":
@@ -227,6 +235,7 @@ async def _chat_async() -> None:
                         session.clear_history()
                     elif user_input == "/new":
                         session = ChatSession(console)
+                        smart_git = SmartGitWorkflow(console, session)  # Re-initialize
                         console.print("[dim]Started a new conversation.[/dim]")
                     elif user_input == "/config":
                         console.print(Panel.fit(
@@ -271,6 +280,19 @@ def _show_help() -> None:
   [yellow]/clear[/yellow]       - Clear conversation history
   [yellow]/new[/yellow]         - Start a new conversation
   [yellow]/config[/yellow]      - Show current configuration
+
+[bold]Smart Git Workflow:[/bold]
+  Say things like:
+    [dim]提交代码[/dim]        - Auto pull, generate commit, push
+    [dim]保存并推送[/dim]      - Same as above
+    [dim]commit changes[/dim]  - English also works
+  
+  Workflow:
+    1. Pull from remote (with rebase)
+    2. Detect and resolve conflicts (interactive)
+    3. Stage all changes
+    4. AI generates commit message
+    5. Commit and push
 
 [bold]Shell Commands:[/bold]
   [yellow]![command][/yellow]     - Execute shell command locally
