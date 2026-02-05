@@ -23,9 +23,16 @@ pip install .
 
 ## Quick Start
 
-1. **Configure API Key:**
+1. **Configure API:**
+   
+   **For Kimi API (Moonshot):**
    ```bash
-   suncli config --api-key <your-openai-api-key>
+   suncli config --api-key <your-kimi-api-key> --base-url https://api.moonshot.cn/v1 --model moonshot-v1-128k
+   ```
+   
+   **For OpenAI API:**
+   ```bash
+   suncli config --api-key <your-openai-api-key> --base-url https://api.openai.com/v1 --model gpt-4o-mini
    ```
 
 2. **Start chatting:**
@@ -189,7 +196,9 @@ Goodbye!
 | Command | Description |
 |---------|-------------|
 | `suncli` | Start interactive chat session |
-| `suncli config` | Configure settings (API key, model) |
+| `suncli config --api-key <key>` | Set API key |
+| `suncli config --base-url <url>` | Set API base URL |
+| `suncli config --model <model>` | Set model |
 | `suncli config --show` | Show current configuration |
 | `suncli prompt` | Preview combined system prompt |
 | `suncli prompt --list` | List all prompt files |
@@ -229,17 +238,34 @@ Commands starting with `!` are executed locally and **NOT** sent to AI.
 
 Configuration can be set via:
 
-1. **Environment variables:** `SUN_API_KEY`, `SUN_MODEL`, etc.
+1. **Environment variables:** `SUN_API_KEY`, `SUN_MODEL`, `SUN_BASE_URL`, etc.
 2. **Config file:** `%APPDATA%/sun-cli/.env` (Windows) or `~/.config/sun-cli/.env` (Linux/Mac)
-3. **CLI:** `suncli config --api-key <key>`
+3. **CLI:** `suncli config --api-key <key> --base-url <url> --model <model>`
+
+### Kimi API (Moonshot) Configuration
+
+```bash
+suncli config --api-key sk-xxx --base-url https://api.moonshot.cn/v1 --model moonshot-v1-128k
+```
+
+Available Kimi models:
+- `moonshot-v1-8k` - 8K context
+- `moonshot-v1-32k` - 32K context
+- `moonshot-v1-128k` - 128K context (recommended)
+
+### OpenAI API Configuration
+
+```bash
+suncli config --api-key sk-xxx --base-url https://api.openai.com/v1 --model gpt-4o-mini
+```
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SUN_API_KEY` | OpenAI API key | - |
+| `SUN_API_KEY` | API key | - |
+| `SUN_BASE_URL` | API base URL | `https://api.openai.com/v1` |
 | `SUN_MODEL` | Model to use | `gpt-4o-mini` |
-| `SUN_BASE_URL` | Custom API base URL | `https://api.openai.com/v1` |
 | `SUN_TEMPERATURE` | Sampling temperature | `0.7` |
 
 ## Development

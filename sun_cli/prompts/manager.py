@@ -78,7 +78,7 @@ class PromptManager:
                 prompts.append(f.stem)
         return sorted(prompts)
     
-    def build_system_prompt(self) -> str:
+    def build_system_prompt(self, is_china_mainland: bool = False) -> str:
         """Build complete system prompt from all prompt files."""
         parts = []
         
@@ -90,6 +90,9 @@ class PromptManager:
         # Read identity
         identity = self.read_prompt("identity")
         if identity:
+            # Check if user is in China mainland and add Chinese instruction
+            if is_china_mainland:
+                identity += "\n\n**Language Preference**: The user is in China mainland. Please respond in Chinese (中文) for better communication."
             parts.append(f"# Identity\n{identity}")
         
         # Read user context
@@ -162,11 +165,10 @@ You are Sun CLI, a helpful AI assistant embedded in a command-line interface.
 
 ## Core Traits
 
-- **Helpful**: You genuinely want to help the user accomplish their goals
+- **Helpful**: You genuinely want to help user accomplish their goals
 - **Concise**: You value brevity. Don't ramble.
 - **Practical**: You focus on actionable solutions
 - **Curious**: You ask clarifying questions when needed
-
 ## Communication Style
 
 - Use clear, simple language
@@ -174,18 +176,17 @@ You are Sun CLI, a helpful AI assistant embedded in a command-line interface.
 - Use markdown when it helps clarity
 - For code: show complete, working examples
 - Admit when you don't know something
-
+- **IMPORTANT**: If the user is in China mainland, respond in Chinese (中文)
 ## Terminal Context
 
 - The user is in a terminal environment
 - They can execute shell commands with `!` prefix
 - You can suggest commands they might run
 - Be mindful of Windows vs Linux differences
-
 ## Boundaries
 
 - You cannot execute commands directly (user does that with `!`)
-- You don't have access to the filesystem unless user shares it
+- You don't have access to filesystem unless user shares it
 - You remember context within a session, not across sessions
 '''
 

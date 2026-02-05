@@ -12,6 +12,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from .git_helper import GitHelper, GitStatus, format_diff_for_ai, detect_commit_intent
 from .conflict_resolver import ConflictResolver, show_conflict_summary
 from .config import get_config
+from .notification import get_notification_manager
 
 
 class SmartGitWorkflow:
@@ -23,6 +24,7 @@ class SmartGitWorkflow:
         self.chat = chat_session
         self.resolver = ConflictResolver(console, self.git)
         self.config = get_config()
+        self.notification = get_notification_manager(console)
     
     async def handle_intent(self, user_input: str) -> bool:
         """Handle user's commit intent. Returns True if handled."""
@@ -119,6 +121,8 @@ class SmartGitWorkflow:
         success, message = self.git.push()
         if success:
             self.console.print("[green]推送成功[/green]")
+            # Show notification and play sound
+            self.notification.notify_success("代码已成功推送到远程仓库")
         else:
             self.console.print(f"[red]推送失败: {message}[/red]")
     

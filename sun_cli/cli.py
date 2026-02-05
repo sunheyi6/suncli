@@ -1,6 +1,7 @@
 """Main CLI entry point for Sun CLI."""
 
 import asyncio
+import os
 from typing import Optional
 
 import typer
@@ -15,9 +16,58 @@ from .config import get_config, get_config_dir
 from .shell import execute_shell_command, is_shell_command, extract_command
 from .prompts import get_prompt_manager
 from .smart_git import SmartGitWorkflow
+from .mirror_manager import init_mirrors, get_mirror_manager, MirrorManager
 
 # Rich console for beautiful output
 console = Console()
+
+
+def get_prompt_info() -> str:
+    """Get current user and path info for prompt display."""
+    try:
+        username = os.getenv("USERNAME") or os.getenv("USER") or "user"
+        cwd = os.getcwd()
+        return f"[cyan]{username}[/cyan]@[dim]{cwd}[/dim]"
+    except Exception:
+        return "[cyan]user[/cyan]@[dim].[/dim]"
+
+
+def get_multiline_input(prompt: str = "You") -> str:
+    """Get input from user.
+    
+    Press Enter to send. Single-line commands (exit, quit, /help, etc.) are executed immediately.
+    Press Ctrl+C to cancel.
+    """
+    prompt_info = get_prompt_info()
+    
+    try:
+        line = console.input(f"{prompt_info} > ")
+        
+        # Handle empty line
+        if line == "":
+            return ""
+        
+        # Handle single-line commands - execute immediately
+        single_line_commands = ["exit", "quit", "/quit", "/exit", "/help", "/clear", "/new", "/config"]
+        if line.strip().lower() in single_line_commands:
+            return line.strip()
+        
+        # Handle shell commands - execute immediately
+        if line.strip().startswith("!"):
+            return line.strip()
+        
+        # Display user input with border
+        console.print(Panel(
+            line,
+            title=f"[bold yellow]{prompt}[/bold yellow] - {prompt_info}",
+            border_style="yellow",
+            padding=(0, 1)
+        ))
+        
+        return line
+    except KeyboardInterrupt:
+        console.print("\n[dim]Input cancelled.[/dim]")
+        return ""
 
 # Create Typer app with invoke_without_command=True
 app = typer.Typer(
@@ -47,6 +97,9 @@ def main(
     
     Run without any command to start interactive chat mode.
     """
+    # Initialize mirrors (auto-detect China mainland and switch to domestic mirrors)
+    init_mirrors(console)
+    
     # If no subcommand is invoked, start chat
     if ctx.invoked_subcommand is None:
         asyncio.run(_chat_async())
@@ -55,10 +108,13 @@ def main(
 @app.command()
 def config(
     api_key: Optional[str] = typer.Option(
-        None, "--api-key", "-k", help="Set OpenAI API key"
+        None, "--api-key", "-k", help="Set API key"
+    ),
+    base_url: Optional[str] = typer.Option(
+        None, "--base-url", "-b", help="Set API base URL (e.g., https://api.moonshot.cn/v1 for Kimi)"
     ),
     model: Optional[str] = typer.Option(
-        None, "--model", "-m", help="Set default model"
+        None, "--model", "-m", help="Set default model (e.g., moonshot-v1-128k for Kimi)"
     ),
     show: bool = typer.Option(
         False, "--show", "-s", help="Show current configuration"
@@ -71,9 +127,9 @@ def config(
         console.print(Panel.fit(
             f"[bold]Current Configuration[/bold]\n\n"
             f"API Key: {'[green][OK] Set[/green]' if cfg.is_configured else '[red][X] Not set[/red]'}\n"
+            f"Base URL: [cyan]{cfg.base_url}[/cyan]\n"
             f"Model: [cyan]{cfg.model}[/cyan]\n"
-            f"Temperature: [cyan]{cfg.temperature}[/cyan]\n"
-            f"Base URL: [cyan]{cfg.base_url or 'Default'}[/cyan]",
+            f"Temperature: [cyan]{cfg.temperature}[/cyan]",
             title="Sun CLI Config"
         ))
         return
@@ -81,13 +137,65 @@ def config(
     if api_key:
         # Save to .env file
         env_file = get_config_dir() / ".env"
-        env_file.write_text(f"SUN_API_KEY={api_key}\n")
+        existing_content = ""
+        if env_file.exists():
+            existing_content = env_file.read_text()
+        
+        # Update or add API key
+        lines = existing_content.split('\n')
+        updated = False
+        for i, line in enumerate(lines):
+            if line.startswith('SUN_API_KEY='):
+                lines[i] = f'SUN_API_KEY={api_key}'
+                updated = True
+                break
+        if not updated:
+            lines.append(f'SUN_API_KEY={api_key}')
+        
+        env_file.write_text('\n'.join(lines) + '\n')
         console.print("[green][OK][/green] API key saved successfully!")
     
+    if base_url:
+        env_file = get_config_dir() / ".env"
+        existing_content = ""
+        if env_file.exists():
+            existing_content = env_file.read_text()
+        
+        # Update or add base URL
+        lines = existing_content.split('\n')
+        updated = False
+        for i, line in enumerate(lines):
+            if line.startswith('SUN_BASE_URL='):
+                lines[i] = f'SUN_BASE_URL={base_url}'
+                updated = True
+                break
+        if not updated:
+            lines.append(f'SUN_BASE_URL={base_url}')
+        
+        env_file.write_text('\n'.join(lines) + '\n')
+        console.print(f"[green][OK][/green] Base URL set to: [cyan]{base_url}[/cyan]")
+    
     if model:
+        env_file = get_config_dir() / ".env"
+        existing_content = ""
+        if env_file.exists():
+            existing_content = env_file.read_text()
+        
+        # Update or add model
+        lines = existing_content.split('\n')
+        updated = False
+        for i, line in enumerate(lines):
+            if line.startswith('SUN_MODEL='):
+                lines[i] = f'SUN_MODEL={model}'
+                updated = True
+                break
+        if not updated:
+            lines.append(f'SUN_MODEL={model}')
+        
+        env_file.write_text('\n'.join(lines) + '\n')
         console.print(f"[green][OK][/green] Model set to: [cyan]{model}[/cyan]")
     
-    if not api_key and not model and not show:
+    if not api_key and not base_url and not model and not show:
         console.print("[yellow]Use --help to see available options[/yellow]")
 
 
@@ -138,7 +246,6 @@ def prompt(
     
     if edit:
         import subprocess
-        import os
         
         # Create file if it doesn't exist
         prompt_path = pm.get_prompt_path(edit)
@@ -193,8 +300,10 @@ async def _chat_async() -> None:
     smart_git = SmartGitWorkflow(console, session)
     
     # Welcome message
+    prompt_info = get_prompt_info()
     console.print(Panel.fit(
         f"[bold blue]Welcome to Sun CLI[/bold blue]\n"
+        f"[dim]Current:[/dim] {prompt_info}\n"
         f"Model: [cyan]{cfg.model}[/cyan]\n"
         f"Type [yellow]/help[/yellow] for commands | [yellow]exit[/yellow] or [yellow]/quit[/yellow] to exit",
         title=f"Sun CLI v{__version__}"
@@ -204,8 +313,8 @@ async def _chat_async() -> None:
     try:
         while True:
             try:
-                # Get user input
-                user_input = Prompt.ask("\n[bold green]You[/bold green]")
+                # Get user input (multiline)
+                user_input = get_multiline_input()
                 
                 # Handle empty input
                 if not user_input.strip():
@@ -241,6 +350,7 @@ async def _chat_async() -> None:
                         console.print(Panel.fit(
                             f"[bold]Current Configuration[/bold]\n\n"
                             f"API Key: {'[green][OK][/green]' if cfg.is_configured else '[red][X][/red]'}\n"
+                            f"Base URL: [cyan]{cfg.base_url}[/cyan]\n"
                             f"Model: [cyan]{cfg.model}[/cyan]\n"
                             f"Temperature: [cyan]{cfg.temperature}[/cyan]",
                             title="Config"
@@ -262,10 +372,25 @@ async def _chat_async() -> None:
 
 async def _handle_message(session: ChatSession, message: str) -> None:
     """Handle sending a message and displaying the response."""
-    console.print("\n[bold blue]Sun CLI[/bold blue]")
+    cfg = get_config()
+    
+    # Check if API is configured
+    if not cfg.is_configured:
+        error_panel = Panel(
+            "[bold red]API Not Configured[/bold red]\n\n"
+            "You need to configure an API key to use AI features.\n\n"
+            "[cyan]Run: suncli config --api-key sk-xxx --base-url https://api.moonshot.cn/v1 --model moonshot-v1-128k[/cyan]",
+            title="[red]Configuration Required[/red]",
+            border_style="red"
+        )
+        console.print(error_panel)
+        return
+    
+    prompt_info = get_prompt_info()
+    console.print(f"\n{prompt_info} [bold blue]Sun CLI[/bold blue]")
     
     try:
-        # Stream the response with live display
+        # Stream response with live display
         await session.stream_message(message)
         console.print()  # Add newline after response
     except Exception as e:
@@ -280,6 +405,19 @@ def _show_help() -> None:
   [yellow]/clear[/yellow]       - Clear conversation history
   [yellow]/new[/yellow]         - Start a new conversation
   [yellow]/config[/yellow]      - Show current configuration
+
+[bold]Configuration:[/bold]
+  Configure API settings:
+    [cyan]suncli config --api-key <key>[/cyan]    - Set API key
+    [cyan]suncli config --base-url <url>[/cyan]    - Set API base URL
+    [cyan]suncli config --model <model>[/cyan]      - Set model
+    [cyan]suncli config --show[/cyan]              - Show current config
+
+  [bold]Kimi API (Moonshot) Example:[/bold]
+    [dim]suncli config --api-key sk-xxx --base-url https://api.moonshot.cn/v1 --model moonshot-v1-128k[/dim]
+
+  [bold]OpenAI API Example:[/bold]
+    [dim]suncli config --api-key sk-xxx --base-url https://api.openai.com/v1 --model gpt-4o-mini[/dim]
 
 [bold]Smart Git Workflow:[/bold]
   Say things like:
