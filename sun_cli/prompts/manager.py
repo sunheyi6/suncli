@@ -78,7 +78,7 @@ class PromptManager:
                 prompts.append(f.stem)
         return sorted(prompts)
     
-    def build_system_prompt(self, is_china_mainland: bool = False) -> str:
+    def build_system_prompt(self, is_china_mainland: bool = False, tools_prompt: str = "", skills_prompt: str = "") -> str:
         """Build complete system prompt from all prompt files."""
         parts = []
         
@@ -86,6 +86,14 @@ class PromptManager:
         system = self.read_prompt("system")
         if system:
             parts.append(f"# System\n{system}")
+        
+        # Add tools definition
+        if tools_prompt:
+            parts.append(tools_prompt)
+        
+        # Add skills prompts
+        if skills_prompt:
+            parts.append(f"# Skills\n{skills_prompt}")
         
         # Read identity
         identity = self.read_prompt("identity")
@@ -99,11 +107,6 @@ class PromptManager:
         user = self.read_prompt("user")
         if user:
             parts.append(f"# User Context\n{user}")
-        
-        # Read tools
-        tools = self.read_prompt("tools")
-        if tools:
-            parts.append(f"# Tools\n{tools}")
         
         # Read memory
         memory = self.read_prompt("memory")

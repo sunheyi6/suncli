@@ -7,9 +7,14 @@ A Claude-like CLI tool powered by AI, built with Python.
 - 💬 Interactive chat with streaming responses
 - 📝 Markdown-based prompt system (inspired by OpenClaw)
 - 🔥 **Smart Git Workflow** - AI-powered commit with auto-pull & conflict resolution
+- 📋 **Plan Mode** - Review and approve implementation plans before execution
+- 🔔 Desktop notifications for task completion
+- 🔊 Sound effects for successful operations
 - ⚙️ Simple configuration management
 - 🎨 Beautiful terminal UI with Rich
 - 🔧 Execute local shell commands without calling AI
+- 🇨🇳 Chinese language support for users in mainland China
+- 🌐 Support for domestic AI services (Kimi, Qwen, GLM, DeepSeek)
 
 ## Installation
 
@@ -40,29 +45,84 @@ pip install .
    suncli
    ```
 
-## 🔥 Smart Git Workflow
+## 📋 Plan Mode
 
-Sun CLI 的智能 Git 工作流让代码提交变得简单：
+Plan Mode allows you to review and approve implementation plans before AI executes them. This is especially useful for complex tasks that involve multiple steps or code changes.
 
-### 使用方法
+### Using Plan Mode
 
 ```bash
 $ suncli
 
-You: 提交代码
+You: /plan
+Enter your task to create a plan:
 
-智能 Git 工作流
-1. 拉取远程代码
-2. 检测冲突
-3. 生成提交信息
-4. 提交并推送
+You: Add user authentication to the application
 
-正在拉取远程代码...
+📋 Plan Preview
+# Add User Authentication
+
+Plan for: Add user authentication to the application
+
+## Implementation Steps
+
+⏳ **Step 1:** Create user model with password hashing
+⏳ **Step 2:** Implement JWT token generation and validation
+⏳ **Step 3:** Add login and logout API endpoints
+⏳ **Step 4:** Create authentication middleware
+⏳ **Step 5:** Add tests for authentication flow
+
+Commands:
+  /approve - Approve and execute the plan
+  /modify  - Request plan modifications
+  /cancel  - Cancel plan mode
+
+You: /approve
+✅ Plan Approved!
+
+Proceeding with implementation...
+[AI executes each step...]
+```
+
+### Plan Mode Commands
+
+| Command | Description |
+|---------|-------------|
+| `/plan` | Enter plan mode for complex tasks |
+| `/approve` | Approve and execute the current plan |
+| `/modify` | Request plan modifications |
+| `/cancel` | Cancel plan mode |
+
+### When to Use Plan Mode
+
+- **Complex refactoring** - Review the refactoring plan before making changes
+- **Feature implementation** - Understand all steps before code is written
+- **Multi-file changes** - See the full scope of changes upfront
+- **Learning** - Understand how AI approaches complex problems
+
+## 🔥 Smart Git Workflow
+
+Sun CLI's intelligent Git workflow makes code commits simple:
+
+### Usage
+
+```bash
+$ suncli
+
+You: commit code
+
+Smart Git Workflow
+1. Pull from remote
+2. Detect conflicts
+3. Generate commit message
+4. Commit and push
+
+Pulling from remote...
 Already up to date.
 
-正在生成提交信息...
+Generating commit message...
 
-建议的提交信息:
+Suggested commit message:
 ┌─────────────────────────────────────────┐
 │ feat: add user authentication module    │
 │                                         │
@@ -71,60 +131,59 @@ Already up to date.
 │ - Update user model with password hash  │
 └─────────────────────────────────────────┘
 
-确认提交? [Y/n]: y
-提交成功
-推送成功
+Confirm commit? [Y/n]: y
+Commit successful
+Push successful
 ```
 
-### 支持的指令
+### Supported Commands
 
-自然语言触发：
+Natural language triggers:
+- "commit code"
+- "save and push"
 - "提交代码"
 - "保存并推送"
-- "commit changes"
-- "push code"
-- "上传代码"
-- ...等等
+- ...and more
 
-### 工作流流程
+### Workflow Steps
 
-1. **自动拉取** - `git pull --rebase` 先拉取远程代码
-2. **冲突检测** - 自动检测是否有合并冲突
-3. **冲突解决** - 交互式冲突解决界面（如果出现冲突）
-4. **生成提交信息** - AI 根据代码变更生成规范的 commit message
-5. **自动提交** - `git commit` 提交代码
-6. **自动推送** - `git push` 推送到远程
+1. **Auto Pull** - `git pull --rebase` to fetch remote changes first
+2. **Conflict Detection** - Automatically detect merge conflicts
+3. **Conflict Resolution** - Interactive conflict resolution UI (if conflicts occur)
+4. **Generate Commit Message** - AI generates conventional commit message based on changes
+5. **Auto Commit** - `git commit` to commit changes
+6. **Auto Push** - `git push` to push to remote
 
-### 冲突解决界面
+### Conflict Resolution UI
 
 ```
-⚠️ 检测到 2 个冲突文件
+⚠️ Detected 2 conflicted files
 
-正在处理: src/auth.py
+Processing: src/auth.py
 
-选项 1: 保留当前分支 (HEAD/ours)
+Option 1: Keep current branch (HEAD/ours)
 ┌────────────────────────────────────┐
 │ 1  def login_user(username):       │
 │ 2      # TODO: implement           │
 │ 3      return validate_token()     │
 └────────────────────────────────────┘
 
-选项 2: 保留远程分支 (incoming/theirs)
+Option 2: Keep remote branch (incoming/theirs)
 ┌────────────────────────────────────┐
 │ 1  def login_user(username):       │
 │ 2      user = get_user(username)   │
 │ 3      return check_password(user) │
 └────────────────────────────────────┘
 
-选项:
-  1 - 保留当前分支的修改 (ours)
-  2 - 保留远程分支的修改 (theirs)
-  3 - 保留双方修改 (合并)
-  e - 手动编辑文件
-  s - 跳过此文件
-  a - 中止 rebase
+Options:
+  1 - Keep current branch changes (ours)
+  2 - Keep remote branch changes (theirs)
+  3 - Keep both changes (merge)
+  e - Edit file manually
+  s - Skip this file
+  a - Abort rebase
 
-选择解决方案 [1/2/3/e/s/a]: 
+Select resolution [1/2/3/e/s/a]: 
 ```
 
 ## Prompt System (Markdown-based)
@@ -170,7 +229,7 @@ suncli prompt --path
 
 ```bash
 $ suncli
-+---------------- Sun CLI v0.1.0 -----------------+
++---------------- Sun CLI v0.2.0 -----------------+
 | Welcome to Sun CLI                              |
 | Model: gpt-4o-mini                              |
 | Type /help for commands | exit or /quit to exit |
@@ -184,7 +243,7 @@ You: !dir
 $ dir
 [Directory listing shows here]
 
-You: 提交代码
+You: commit code
 [Smart Git workflow executes...]
 
 You: exit
@@ -218,6 +277,10 @@ During an interactive chat session:
 | `/clear` | Clear conversation history (system prompt preserved) |
 | `/new` | Start a new conversation |
 | `/config` | Show current configuration |
+| `/plan` | Enter plan mode for complex tasks |
+| `/approve` | Approve and execute the current plan |
+| `/modify` | Request plan modifications |
+| `/cancel` | Cancel plan mode |
 
 ## Shell Commands
 

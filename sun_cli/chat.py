@@ -13,6 +13,13 @@ from .config import get_config
 from .models import Conversation, MessageRole
 from .prompts import get_prompt_manager
 from .mirror_manager import get_mirror_manager
+from .tools import TOOL_DEFINITIONS
+from .tools.executor import ToolCallParser, ToolExecutor
+from .skills import get_skill_manager, SkillContext
+from .skills.git import GitSkill
+from .skills.prompt import PromptSkill
+from .skills.config import ConfigSkill
+from .plan_mode import PlanModeManager, PlanMode
 
 
 class ChatSession:
@@ -23,6 +30,17 @@ class ChatSession:
         self.config = get_config()
         self.conversation = Conversation(id=str(uuid.uuid4())[:8])
         self.prompt_manager = get_prompt_manager()
+        
+        # Initialize plan mode manager
+        self.plan_manager = PlanModeManager(console)
+        
+        # Initialize skill manager
+        self.skill_manager = get_skill_manager()
+        
+        # Register skills
+        self.skill_manager.register(GitSkill())
+        self.skill_manager.register(PromptSkill())
+        self.skill_manager.register(ConfigSkill())
         
         # Detect location for language preference
         self._is_china_mainland = False
@@ -51,8 +69,25 @@ class ChatSession:
         self._initialize_system_prompt()
     
     def _initialize_system_prompt(self) -> None:
-        """Load system prompt from prompt files."""
-        system_prompt = self.prompt_manager.build_system_prompt(self._is_china_mainland)
+        """Load system prompt from prompt files and skills."""
+        tools_prompt = TOOL_DEFINITIONS
+        skills_prompt = self.skill_manager.get_all_system_prompts()
+        
+        # Add plan mode prompt if active
+        plan_mode_prompt = ""
+        if self.plan_manager.is_active:
+            plan_mode_prompt = self.plan_manager.get_system_prompt()
+        
+        system_prompt = self.prompt_manager.build_system_prompt(
+            self._is_china_mainland, 
+            tools_prompt=tools_prompt,
+            skills_prompt=skills_prompt
+        )
+        
+        # Combine all prompts
+        if plan_mode_prompt:
+            system_prompt = f"{system_prompt}\n\n{plan_mode_prompt}"
+        
         if system_prompt:
             self.conversation.add_message(MessageRole.SYSTEM, system_prompt)
     
@@ -116,9 +151,83 @@ class ChatSession:
                             except (json.JSONDecodeError, KeyError):
                                 continue
             
-            self.conversation.add_message(MessageRole.ASSISTANT, full_content)
+            # Check for tool calls in the response
+            tool_calls = ToolCallParser.parse(full_content)
             
-            return full_content
+            if tool_calls:
+                # Execute tools and get results
+                self.console.print("\n[dim][Executing tools...][/dim]")
+                tool_results = ToolExecutor.execute_all(tool_calls)
+                
+                # Display tool calls and results
+                for call, result in zip(tool_calls, tool_results):
+                    self.console.print(f"[cyan]Tool:[/cyan] {call.to_string()}")
+                    self.console.print(f"[dim]Result:[/dim] {result[:500]}{'...' if len(result) > 500 else ''}")
+                
+                # Add assistant message with tool calls
+                self.conversation.add_message(MessageRole.ASSISTANT, full_content)
+                
+                # Add tool results as system message
+                tool_results_text = "\n\n".join(
+                    f"Tool: {call.to_string()}\nResult: {result}"
+                    for call, result in zip(tool_calls, tool_results)
+                )
+                self.conversation.add_message(MessageRole.SYSTEM, f"[Tool Results]\n{tool_results_text}")
+                
+                # Continue conversation with tool results
+                follow_up_prompt = "Based on the tool results above, please continue with your task."
+                self.conversation.add_message(MessageRole.USER, follow_up_prompt)
+                
+                # Get follow-up response
+                return await self._get_follow_up_response()
+            else:
+                # No tool calls, just add assistant message
+                self.conversation.add_message(MessageRole.ASSISTANT, full_content)
+                return full_content
+                
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                self._show_api_error()
+            raise
+        except Exception as e:
+            raise
+    
+    async def _get_follow_up_response(self) -> str:
+        """Get follow-up response after tool execution."""
+        try:
+            async with self.client.stream(
+                "POST",
+                "/chat/completions",
+                json={
+                    "model": self.config.model,
+                    "messages": self.conversation.to_openai_messages(),
+                    "temperature": self.config.temperature,
+                    "max_tokens": self.config.max_tokens,
+                    "stream": True,
+                },
+            ) as response:
+                response.raise_for_status()
+                
+                full_content = ""
+                
+                with Live(Markdown(""), console=self.console, refresh_per_second=10) as live:
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data)
+                                delta = chunk["choices"][0]["delta"].get("content", "")
+                                if delta:
+                                    full_content += delta
+                                    live.update(Markdown(full_content))
+                            except (json.JSONDecodeError, KeyError):
+                                continue
+                
+                self.conversation.add_message(MessageRole.ASSISTANT, full_content)
+                return full_content
+                
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 self._show_api_error()
@@ -187,6 +296,41 @@ class ChatSession:
         self.conversation.messages.clear()
         self.conversation.messages.extend(system_messages)
         self.console.print("[dim]Conversation history cleared. (System prompt preserved)[/dim]")
+    
+    def enter_plan_mode(self, user_input: str) -> None:
+        """Enter plan mode for the given user input."""
+        self.plan_manager.start_planning(user_input)
+        # Reinitialize system prompt with plan mode instructions
+        self._initialize_system_prompt()
+    
+    def approve_plan(self) -> bool:
+        """Approve the current plan."""
+        return self.plan_manager.approve()
+    
+    def cancel_plan_mode(self) -> None:
+        """Cancel plan mode."""
+        self.plan_manager.cancel()
+        # Reinitialize system prompt without plan mode
+        self._initialize_system_prompt()
+    
+    def exit_plan_mode(self, title: str, plan: str) -> None:
+        """Exit plan mode after successful completion."""
+        self.plan_manager.cancel()
+        self.console.print(Panel(
+            f"[bold green]✅ Plan Completed: {title}[/bold green]\n\n"
+            f"[dim]{plan[:200]}{'...' if len(plan) > 200 else ''}[/dim]",
+            border_style="green"
+        ))
+        # Reinitialize system prompt without plan mode
+        self._initialize_system_prompt()
+    
+    def is_in_plan_mode(self) -> bool:
+        """Check if currently in plan mode."""
+        return self.plan_manager.is_active
+    
+    def get_plan_mode(self) -> PlanMode:
+        """Get current plan mode state."""
+        return self.plan_manager.mode
     
     async def close(self) -> None:
         """Close the HTTP client."""

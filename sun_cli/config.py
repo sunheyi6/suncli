@@ -64,3 +64,53 @@ def get_config(reload: bool = False) -> Config:
 def reload_config() -> Config:
     """Reload configuration from disk."""
     return get_config(reload=True)
+
+
+def update_config(**kwargs) -> Config:
+    """Update configuration and save to env file."""
+    config = get_config()
+    env_file = get_env_file_path()
+    
+    # Read existing env file
+    existing_content = ""
+    if env_file.exists():
+        existing_content = env_file.read_text(encoding="utf-8")
+    
+    # Parse existing lines
+    lines = existing_content.split('\n')
+    updated_lines = []
+    
+    # Map of env var names to config fields
+    env_mapping = {
+        'api_key': 'SUN_API_KEY',
+        'base_url': 'SUN_BASE_URL',
+        'model': 'SUN_MODEL',
+        'temperature': 'SUN_TEMPERATURE',
+        'max_tokens': 'SUN_MAX_TOKENS',
+        'theme': 'SUN_THEME',
+    }
+    
+    # Update values
+    for key, value in kwargs.items():
+        if key in env_mapping and value is not None:
+            env_var = env_mapping[key]
+            str_value = str(value)
+            
+            # Find and replace existing line
+            found = False
+            for i, line in enumerate(lines):
+                if line.startswith(f'{env_var}='):
+                    lines[i] = f'{env_var}={str_value}'
+                    found = True
+                    break
+            
+            # Add new line if not found
+            if not found:
+                lines.append(f'{env_var}={str_value}')
+    
+    # Write updated content
+    env_file.write_text('\n'.join(lines) + '\n', encoding="utf-8")
+    
+    # Reload config
+    return reload_config()
+
