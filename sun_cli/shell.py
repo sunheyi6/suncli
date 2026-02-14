@@ -20,10 +20,22 @@ def execute_shell_command(command: str, console: Console) -> int:
     if not command.strip():
         return 0
     
+    cmd_lower = command.strip().lower()
+    
     # Handle cd command specially to change directory
     parts = command.strip().split(maxsplit=1)
     if parts and parts[0].lower() == 'cd':
         return _handle_cd(parts[1] if len(parts) > 1 else "", console)
+    
+    # Handle clear/cls commands - they don't work well in subprocess
+    if cmd_lower in ('cls', 'clear'):
+        console.print("[dim]Tip: Use 'clear' or 'cls' in your system terminal. In Sun CLI, use /clear to clear conversation history.[/dim]")
+        return 0
+    
+    # Handle exit/quit commands - prevent accidental exit
+    if cmd_lower in ('exit', 'quit', 'exit()', 'quit()'):
+        console.print("[yellow]Tip: To exit Sun CLI, type 'exit' or 'quit' without the '!' prefix.[/yellow]")
+        return 0
     
     try:
         # Execute command and capture output as bytes first
@@ -39,11 +51,11 @@ def execute_shell_command(command: str, console: Console) -> int:
         
         # Print stdout
         if stdout_text:
-            print(stdout_text.rstrip())
+            console.print(stdout_text.rstrip())
         
         # Print stderr
         if stderr_text:
-            print(f"[Warning] {stderr_text.rstrip()}")
+            console.print(f"[yellow][Warning][/yellow] {stderr_text.rstrip()}")
         
         # Show exit code if non-zero
         if result.returncode != 0:

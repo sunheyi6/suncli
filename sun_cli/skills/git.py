@@ -63,13 +63,15 @@ The workflow handles all steps automatically with user confirmation.
     async def _execute_workflow(self):
         self.context.console.print(Panel(
             "[bold blue]智能 Git 工作流[/bold blue]\n"
-            "1. 拉取远程代码\n"
-            "2. 检测冲突\n"
-            "3. 生成提交信息\n"
-            "4. 提交并推送",
+            "1. 暂存本地更改\n"
+            "2. 拉取远程代码\n"
+            "3. 检测冲突\n"
+            "4. 生成提交信息\n"
+            "5. 提交并推送",
             title="Git Workflow"
         ))
         
+        # 第一步：检查并暂存本地更改
         status = self.git.get_status()
         
         if status.has_conflicts:
@@ -79,6 +81,13 @@ The workflow handles all steps automatically with user confirmation.
             else:
                 return
         
+        # 先暂存本地更改，然后再 pull（避免 "unstaged changes" 错误）
+        if status.unstaged or status.untracked:
+            self.context.console.print("[dim]正在暂存本地更改...[/dim]")
+            self.git.stage_all()
+            self.context.console.print("[green]✓ 已暂存所有更改[/green]")
+        
+        # 第二步：拉取远程代码
         success, message = self.git.pull(rebase=True)
         
         if not success:
@@ -86,26 +95,30 @@ The workflow handles all steps automatically with user confirmation.
                 status = self.git.get_status()
                 if status.conflicted_files:
                     show_conflict_summary(self.context.console, status.conflicted_files)
-                    
+                
                     if self.resolver.resolve_all(status.conflicted_files):
                         self.context.console.print("[green]冲突已解决，继续提交流程[/green]")
                     else:
                         self.context.console.print("[yellow]提交已中止，请解决冲突后重试[/yellow]")
                         return
             else:
-                self.context.console.print(f"[red]拉取失败: {message}[/red]")
-                return
+                # 其他错误（如网络问题或未配置上游分支等）
+                self.context.console.print(f"[yellow]拉取提醒: {message}[/yellow]")
+                self.context.console.print("[dim]将继续提交本地更改...[/dim]")
         else:
-            self.context.console.print(f"[dim]{message}[/dim]")
+            if message:
+                self.context.console.print(f"[dim]{message}[/dim]")
         
+        # 第三步：检查是否有更改需要提交
         status = self.git.get_status()
         
         if not status.has_changes and not status.ahead:
             self.context.console.print("[dim]没有需要提交的更改[/dim]")
             return
         
+        # 确保所有更改都已暂存
         if status.unstaged or status.untracked:
-            self.context.console.print("[dim]正在暂存所有更改...[/dim]")
+            self.context.console.print("[dim]正在暂存新增更改...[/dim]")
             self.git.stage_all()
         
         commit_message = await self._generate_commit_message()

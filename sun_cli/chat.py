@@ -7,6 +7,9 @@ import httpx
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
+from rich.syntax import Syntax
+from rich.text import Text
+from rich.align import Align
 from rich.panel import Panel
 
 from .config import get_config
@@ -90,6 +93,73 @@ class ChatSession:
         
         if system_prompt:
             self.conversation.add_message(MessageRole.SYSTEM, system_prompt)
+    
+    def _render_with_code_highlight(self, content: str) -> None:
+        """Render content with enhanced code block highlighting."""
+        import re
+        from rich.console import Group
+        
+        # Pattern to match code blocks
+        code_block_pattern = re.compile(r'```(\w*)\n(.*?)```', re.DOTALL)
+        
+        parts = []
+        last_end = 0
+        
+        for match in code_block_pattern.finditer(content):
+            # Add text before code block as Markdown
+            if match.start() > last_end:
+                text_part = content[last_end:match.start()]
+                if text_part.strip():
+                    parts.append(Markdown(text_part))
+            
+            # Create syntax highlighted code block
+            language = match.group(1) or "text"
+            code = match.group(2).rstrip('\n')
+            
+            # Map common aliases
+            lang_map = {
+                "py": "python", "js": "javascript", "ts": "typescript",
+                "sh": "bash", "shell": "bash", "zsh": "bash",
+                "yml": "yaml", "": "text",
+            }
+            syntax_lang = lang_map.get(language.lower(), language.lower())
+            
+            # Create syntax highlighted panel
+            syntax = Syntax(
+                code,
+                syntax_lang,
+                theme="monokai",
+                line_numbers=True,
+                word_wrap=True,
+                padding=(1, 2),
+            )
+            
+            lang_display = language.upper() if language else "CODE"
+            panel = Panel(
+                syntax,
+                title=f"[bold cyan]📋 {lang_display}[/bold cyan]",
+                title_align="left",
+                border_style="cyan",
+                subtitle="[dim]💡 选中复制 / Select to copy[/dim]",
+                subtitle_align="right",
+                padding=(0, 0),
+            )
+            parts.append(panel)
+            
+            last_end = match.end()
+        
+        # Add remaining text
+        if last_end < len(content):
+            text_part = content[last_end:]
+            if text_part.strip():
+                parts.append(Markdown(text_part))
+        
+        # Render all parts
+        if parts:
+            self.console.print(Group(*parts))
+        else:
+            # No code blocks, just render as markdown
+            self.console.print(Markdown(content))
     
     async def send_message(self, content: str) -> str:
         """Send a message and get the complete response."""
