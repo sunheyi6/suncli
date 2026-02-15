@@ -11,6 +11,7 @@ from rich.layout import Layout
 from rich.live import Live
 
 from .git_helper import GitHelper, ConflictInfo
+from .config import get_config
 
 
 class ConflictResolver:
@@ -97,7 +98,13 @@ class ConflictResolver:
                 
             elif choice == "a":
                 # Abort rebase
-                if Confirm.ask("确定要中止 rebase 吗？未保存的更改可能会丢失"):
+                cfg = get_config()
+                if cfg.yolo_mode:
+                    self.console.print("[dim]⚡ 自动确认模式：中止 rebase[/dim]")
+                    if self.git.abort_rebase():
+                        self.console.print("[yellow]已中止 rebase[/yellow]")
+                    return False
+                elif Confirm.ask("确定要中止 rebase 吗？未保存的更改可能会丢失"):
                     if self.git.abort_rebase():
                         self.console.print("[yellow]已中止 rebase[/yellow]")
                     return False

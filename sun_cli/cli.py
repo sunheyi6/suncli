@@ -124,6 +124,12 @@ def config(
     model: Optional[str] = typer.Option(
         None, "--model", "-m", help="Set default model (e.g., moonshot-v1-128k for Kimi)"
     ),
+    auto_confirm: Optional[bool] = typer.Option(
+        None, "--yolo", "-y", help="Enable auto-confirm mode (skip all confirmations)"
+    ),
+    no_confirm: Optional[bool] = typer.Option(
+        None, "--no-yolo", help="Disable auto-confirm mode"
+    ),
     show: bool = typer.Option(
         False, "--show", "-s", help="Show current configuration"
     ),
@@ -132,12 +138,14 @@ def config(
     cfg = get_config()
     
     if show:
+        yolo_status = "[green]✓ 已启用[/green]" if cfg.yolo_mode else "[dim]已禁用[/dim]"
         console.print(Panel.fit(
             f"[bold]Current Configuration[/bold]\n\n"
             f"API Key: {'[green][OK] Set[/green]' if cfg.is_configured else '[red][X] Not set[/red]'}\n"
             f"Base URL: [cyan]{cfg.base_url}[/cyan]\n"
             f"Model: [cyan]{cfg.model}[/cyan]\n"
-            f"Temperature: [cyan]{cfg.temperature}[/cyan]",
+            f"Temperature: [cyan]{cfg.temperature}[/cyan]\n"
+            f"Auto Confirm (Yolo): {yolo_status}",
             title="Sun CLI Config"
         ))
         return
@@ -154,7 +162,16 @@ def config(
         update_config(model=model)
         console.print(f"[green][OK][/green] Model set to: [cyan]{model}[/cyan]")
     
-    if not api_key and not base_url and not model and not show:
+    if auto_confirm is True:
+        update_config(auto_confirm=True)
+        console.print("[green][OK][/green] 自动确认模式已启用！[/green] 所有操作将直接执行，不再询问确认。")
+        console.print("[yellow]⚠️ 警告：此模式下文件修改和Git操作将自动执行，请谨慎使用！[/yellow]")
+    
+    if no_confirm is True:
+        update_config(auto_confirm=False)
+        console.print("[green][OK][/green] 自动确认模式已禁用，恢复手动确认。")
+    
+    if not api_key and not base_url and not model and auto_confirm is None and no_confirm is None and not show:
         console.print("[yellow]Use --help to see available options[/yellow]")
 
 

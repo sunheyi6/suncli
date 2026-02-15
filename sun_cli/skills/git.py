@@ -130,7 +130,10 @@ The workflow handles all steps automatically with user confirmation.
         self.context.console.print(f"\n[bold]建议的提交信息:[/bold]")
         self.context.console.print(Panel(commit_message, border_style="green"))
         
-        if not Confirm.ask("确认提交?", default=True):
+        # Check if auto-confirm (yolo) mode is enabled
+        if self.config.yolo_mode:
+            self.context.console.print("[dim]⚡ 自动确认模式已启用，直接执行...[/dim]")
+        elif not Confirm.ask("确认提交?", default=True):
             self.context.console.print("[dim]已取消提交[/dim]")
             return
         

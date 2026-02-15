@@ -43,10 +43,18 @@ class Config(BaseSettings):
     # UI
     theme: Literal["dark", "light", "system"] = Field(default="dark")
     
+    # Behavior - Auto Confirmation (Yolo Mode)
+    auto_confirm: bool = Field(default=False, description="Skip all confirmations and execute directly")
+    
     @property
     def is_configured(self) -> bool:
         """Check if API key is configured."""
         return self.api_key is not None
+    
+    @property
+    def yolo_mode(self) -> bool:
+        """Check if auto-confirm (yolo) mode is enabled."""
+        return self.auto_confirm
 
 
 # Global config instance
@@ -88,6 +96,7 @@ def update_config(**kwargs) -> Config:
         'temperature': 'SUN_TEMPERATURE',
         'max_tokens': 'SUN_MAX_TOKENS',
         'theme': 'SUN_THEME',
+        'auto_confirm': 'SUN_AUTO_CONFIRM',
     }
     
     # Update values
