@@ -1,0 +1,7 @@
+feat: add project context collection and code highlighting
+
+- Add context_collector module for automatic project info collection
+- Integrate project context into system prompt
+- Add code block syntax highlighting and copy hints
+- Enhance tool call display experience
+- Improve user interaction experience

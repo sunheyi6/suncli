@@ -2,9 +2,10 @@
 
 import json
 import uuid
+import re
 
 import httpx
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.syntax import Syntax
@@ -17,12 +18,13 @@ from .models import Conversation, MessageRole
 from .prompts import get_prompt_manager
 from .mirror_manager import get_mirror_manager
 from .tools import TOOL_DEFINITIONS
-from .tools.executor import ToolCallParser, ToolExecutor
+from .tools.executor import ToolCallParser, ToolExecutor, ToolCall
 from .skills import get_skill_manager, SkillContext
 from .skills.git import GitSkill
 from .skills.prompt import PromptSkill
 from .skills.config import ConfigSkill
 from .plan_mode import PlanModeManager, PlanMode
+from .context_collector import get_context_collector
 
 
 class ChatSession:
@@ -72,7 +74,7 @@ class ChatSession:
         self._initialize_system_prompt()
     
     def _initialize_system_prompt(self) -> None:
-        """Load system prompt from prompt files and skills."""
+        """Load system prompt from prompt files, skills, and project context."""
         tools_prompt = TOOL_DEFINITIONS
         skills_prompt = self.skill_manager.get_all_system_prompts()
         
@@ -81,11 +83,33 @@ class ChatSession:
         if self.plan_manager.is_active:
             plan_mode_prompt = self.plan_manager.get_system_prompt()
         
+        # Build base system prompt
         system_prompt = self.prompt_manager.build_system_prompt(
             self._is_china_mainland, 
             tools_prompt=tools_prompt,
             skills_prompt=skills_prompt
         )
+        
+        # Collect and add project context
+        try:
+            context_collector = get_context_collector(self.console)
+            project_context = context_collector.build_system_context()
+            
+            # Show context summary to user
+            context_summary = context_collector.collect()
+            if context_summary.project_name:
+                self.console.print(Panel(
+                    f"[bold]{context_summary.project_name}[/bold] ({context_summary.project_type})\n"
+                    f"[dim]{context_summary.root_path}[/dim]",
+                    title="[blue]📂 已加载项目信息[/blue]",
+                    border_style="blue"
+                ))
+            
+            # Add project context to system prompt
+            system_prompt = f"{system_prompt}\n\n{project_context}"
+        except Exception as e:
+            # Don't fail if context collection fails
+            self.console.print(f"[dim]⚠️ 无法加载项目信息: {e}[/dim]")
         
         # Combine all prompts
         if plan_mode_prompt:
@@ -184,86 +208,86 @@ class ChatSession:
         
         return assistant_content
     
-    async def stream_message(self, content: str) -> str:
-        """Send a message and stream the response with live display."""
+    async def stream_message(self, content: str, max_tool_iterations: int = 10) -> str:
+        """Send a message and stream the response with multi-round tool calling support.
+        
+        This method supports iterative tool calling where the AI can:
+        1. Analyze the user's request
+        2. Call tools to gather information
+        3. Analyze the results
+        4. Call more tools if needed
+        5. Provide the final answer
+        
+        Args:
+            content: User's message
+            max_tool_iterations: Maximum number of tool call rounds (default: 10)
+            
+        Returns:
+            Final assistant response
+        """
         # Add user message
         self.conversation.add_message(MessageRole.USER, content)
         
-        # Call API with streaming
-        try:
-            async with self.client.stream(
-                "POST",
-                "/chat/completions",
-                json={
-                    "model": self.config.model,
-                    "messages": self.conversation.to_openai_messages(),
-                    "temperature": self.config.temperature,
-                    "max_tokens": self.config.max_tokens,
-                    "stream": True,
-                },
-            ) as response:
-                response.raise_for_status()
-                
-                full_content = ""
-                
-                with Live(Markdown(""), console=self.console, refresh_per_second=10) as live:
-                    async for line in response.aiter_lines():
-                        if line.startswith("data: "):
-                            data = line[6:]
-                            if data == "[DONE]":
-                                break
-                            try:
-                                chunk = json.loads(data)
-                                delta = chunk["choices"][0]["delta"].get("content", "")
-                                if delta:
-                                    full_content += delta
-                                    live.update(Markdown(full_content))
-                            except (json.JSONDecodeError, KeyError):
-                                continue
+        # Start multi-round tool calling loop
+        return await self._run_tool_loop(max_iterations=max_tool_iterations)
+    
+    async def _run_tool_loop(self, max_iterations: int = 10) -> str:
+        """Run the multi-round tool calling loop.
+        
+        Only displays output for the final round (when no more tool calls are needed).
+        Intermediate rounds with tool calls are processed silently.
+        
+        Args:
+            max_iterations: Maximum number of tool call rounds
             
-            # Check for tool calls in the response
+        Returns:
+            Final assistant response
+        """
+        iteration = 0
+        
+        while iteration < max_iterations:
+            iteration += 1
+            
+            # Get AI response (without displaying for intermediate rounds)
+            # We check if this is the final round after parsing tool calls
+            full_content = await self._stream_ai_response(display_output=False)
+            
+            # Check for tool calls
             tool_calls = ToolCallParser.parse(full_content)
             
-            if tool_calls:
-                # Execute tools and get results
-                self.console.print("\n[dim][Executing tools...][/dim]")
-                tool_results = ToolExecutor.execute_all(tool_calls)
-                
-                # Display tool calls and results
-                for call, result in zip(tool_calls, tool_results):
-                    self.console.print(f"[cyan]Tool:[/cyan] {call.to_string()}")
-                    self.console.print(f"[dim]Result:[/dim] {result[:500]}{'...' if len(result) > 500 else ''}")
-                
-                # Add assistant message with tool calls
+            if not tool_calls:
+                # No tool calls, this is the final response - display it now
                 self.conversation.add_message(MessageRole.ASSISTANT, full_content)
-                
-                # Add tool results as system message
-                tool_results_text = "\n\n".join(
-                    f"Tool: {call.to_string()}\nResult: {result}"
-                    for call, result in zip(tool_calls, tool_results)
-                )
-                self.conversation.add_message(MessageRole.SYSTEM, f"[Tool Results]\n{tool_results_text}")
-                
-                # Continue conversation with tool results
-                follow_up_prompt = "Based on the tool results above, please continue with your task."
-                self.conversation.add_message(MessageRole.USER, follow_up_prompt)
-                
-                # Get follow-up response
-                return await self._get_follow_up_response()
-            else:
-                # No tool calls, just add assistant message
-                self.conversation.add_message(MessageRole.ASSISTANT, full_content)
+                self.console.print(Markdown(full_content))
                 return full_content
-                
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                self._show_api_error()
-            raise
-        except Exception as e:
-            raise
+            
+            # There are tool calls - execute them silently
+            self.console.print(f"\n[dim][正在分析... {iteration}/{max_iterations}][/dim]")
+            tool_results = await self._execute_tool_calls(tool_calls)
+            
+            # Add assistant message with tool calls to conversation
+            self.conversation.add_message(MessageRole.ASSISTANT, full_content)
+            
+            # Add tool results to conversation
+            tool_results_message = self._format_tool_results(tool_calls, tool_results)
+            self.conversation.add_message(MessageRole.SYSTEM, tool_results_message)
+        
+        # Max iterations reached - get final response with display
+        self.console.print(f"[yellow]已达到最大工具调用次数 ({max_iterations})，生成最终回复...[/yellow]")
+        final_content = await self._stream_ai_response(display_output=True)
+        self.conversation.add_message(MessageRole.ASSISTANT, final_content)
+        return final_content
     
-    async def _get_follow_up_response(self) -> str:
-        """Get follow-up response after tool execution."""
+    async def _stream_ai_response(self, display_output: bool = True) -> str:
+        """Stream AI response and return the full content.
+        
+        Args:
+            display_output: Whether to display the streaming output to the user.
+                          Set to False for intermediate tool-calling rounds.
+        
+        Returns:
+            Full response content
+        """
         try:
             async with self.client.stream(
                 "POST",
@@ -280,7 +304,24 @@ class ChatSession:
                 
                 full_content = ""
                 
-                with Live(Markdown(""), console=self.console, refresh_per_second=10) as live:
+                if display_output:
+                    # Stream to user
+                    with Live(Markdown(""), console=self.console, refresh_per_second=10) as live:
+                        async for line in response.aiter_lines():
+                            if line.startswith("data: "):
+                                data = line[6:]
+                                if data == "[DONE]":
+                                    break
+                                try:
+                                    chunk = json.loads(data)
+                                    delta = chunk["choices"][0]["delta"].get("content", "")
+                                    if delta:
+                                        full_content += delta
+                                        live.update(Markdown(full_content))
+                                except (json.JSONDecodeError, KeyError):
+                                    continue
+                else:
+                    # Silent mode - just collect the content
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
                             data = line[6:]
@@ -291,11 +332,9 @@ class ChatSession:
                                 delta = chunk["choices"][0]["delta"].get("content", "")
                                 if delta:
                                     full_content += delta
-                                    live.update(Markdown(full_content))
                             except (json.JSONDecodeError, KeyError):
                                 continue
                 
-                self.conversation.add_message(MessageRole.ASSISTANT, full_content)
                 return full_content
                 
         except httpx.HTTPStatusError as e:
@@ -303,7 +342,81 @@ class ChatSession:
                 self._show_api_error()
             raise
         except Exception as e:
+            self.console.print(f"[red]Error: {e}[/red]")
             raise
+    
+    async def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> list[str]:
+        """Execute tool calls and display results.
+        
+        Automatically deduplicates identical tool calls to avoid redundant execution.
+        
+        Args:
+            tool_calls: List of tool calls to execute
+            
+        Returns:
+            List of tool results
+        """
+        results = []
+        executed = {}  # Cache for deduplication: {(name, args_key): result}
+        
+        for i, call in enumerate(tool_calls, 1):
+            # Create a key for deduplication
+            args_key = json.dumps(call.args, sort_keys=True, ensure_ascii=False)
+            cache_key = (call.name, args_key)
+            
+            # Check if this exact call was already executed
+            if cache_key in executed:
+                self.console.print(Panel(
+                    f"[dim]{call.to_string()}[/dim]",
+                    title=f"[bold blue]Tool {i}/{len(tool_calls)}[/bold blue] [yellow](duplicate, skipped)[/yellow]",
+                    border_style="yellow"
+                ))
+                results.append(executed[cache_key])
+                continue
+            
+            # Show tool call
+            self.console.print(Panel(
+                f"[cyan]{call.to_string()}[/cyan]",
+                title=f"[bold blue]Tool {i}/{len(tool_calls)}[/bold blue]",
+                border_style="blue"
+            ))
+            
+            # Execute tool
+            result = ToolExecutor.execute(call)
+            executed[cache_key] = result
+            results.append(result)
+            
+            # Show result (truncate if too long)
+            display_result = result[:800] + "..." if len(result) > 800 else result
+            self.console.print(Panel(
+                display_result,
+                title="[dim]Result[/dim]",
+                border_style="green" if "Error" not in result else "red"
+            ))
+        
+        return results
+    
+    def _format_tool_results(self, tool_calls: list[ToolCall], results: list[str]) -> str:
+        """Format tool calls and results for the conversation context.
+        
+        Args:
+            tool_calls: List of tool calls
+            results: List of tool results
+            
+        Returns:
+            Formatted message for conversation
+        """
+        parts = ["[Tool Execution Results]"]
+        
+        for call, result in zip(tool_calls, results):
+            parts.append(f"\nTool: {call.name}")
+            parts.append(f"Arguments: {json.dumps(call.args, ensure_ascii=False)}")
+            parts.append(f"Result: {result}")
+        
+        parts.append("\n[End of Tool Results]")
+        parts.append("\nBased on the above tool results, please continue with your task.")
+        
+        return "\n".join(parts)
     
     def _show_api_error(self) -> None:
         """Show API configuration error with recommendations."""

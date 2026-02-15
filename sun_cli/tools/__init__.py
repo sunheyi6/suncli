@@ -147,6 +147,7 @@ Read the contents of a file.
 - Usage: `<tool name="read"><arg name="file_path">path/to/file</arg></tool>`
 - Args: file_path (string) - Path to the file
 - Returns: File content as text
+- Tip: Use offset and limit for large files
 
 ### write
 Write content to a file (creates new or overwrites existing).
@@ -155,16 +156,18 @@ Write content to a file (creates new or overwrites existing).
   - file_path (string) - Path to the file
   - content (string) - Content to write
 - Returns: Success message
+- WARNING: This will overwrite existing files!
 
 ### edit
 Edit a file by replacing a specific string.
 - Usage: `<tool name="edit"><arg name="file_path">path/to/file</arg><arg name="old_str">old text</arg><arg name="new_str">new text</arg></tool>`
 - Args:
   - file_path (string) - Path to the file
-  - old_str (string) - Exact string to search for
+  - old_str (string) - Exact string to search for (must match exactly!)
   - new_str (string) - Replacement string
 - Returns: Success message
-- Note: old_str must match exactly (case-sensitive)
+- Note: old_str must match exactly (case-sensitive, including whitespace)
+- Tip: For multi-line edits, include the surrounding context
 
 ### bash
 Execute a shell command.
@@ -173,38 +176,65 @@ Execute a shell command.
   - command (string) - Command to execute
   - cwd (string, optional) - Working directory
 - Returns: Command output (stdout + stderr)
+- Use for: git operations, running tests, listing files, etc.
+
+## Multi-Round Tool Calling (IMPORTANT!)
+
+You can call tools MULTIPLE TIMES in sequence! The system supports iterative tool calling:
+
+1. You analyze the user's request
+2. You call tools to gather information
+3. You receive the tool results
+4. You can call MORE tools if needed
+5. Repeat until you have all information
+6. Finally, provide your answer WITHOUT tool calls
 
 ## Tool Usage Guidelines
 
-1. Use `read` to understand existing code before making changes
-2. Use `write` for creating new files or complete rewrites
-3. Use `edit` for targeted changes (more precise than write)
-4. Use `bash` for running commands, tests, git operations, etc.
-5. Always check tool results before proceeding
-6. If a tool fails, analyze the error and try alternative approaches
-7. Be careful with destructive operations (bash commands like rm, git reset, etc.)
+1. **Always read first**: Use `read` to understand existing code before making changes
+2. **Be precise with edit**: old_str must match exactly - copy from the file content
+3. **Multi-step tasks**: Break complex tasks into multiple tool calls
+4. **Verify results**: After editing, read the file again to verify changes
+5. **Use bash wisely**: For git operations, file listing, running tests
+6. **Handle errors**: If a tool fails, analyze the error and try alternative approaches
+7. **Destructive operations**: Be extra careful with rm, git reset, etc.
 
-## Example Workflow
+## Example Workflows
 
-User: "Read the README file and add a new section"
-Assistant: I'll read the README file first.
-<tool name="read">
-  <arg name="file_path">README.md</arg>
+### Example 1: Simple Read
+User: "What's in README.md?"
+Assistant: <tool name="read"><arg name="file_path">README.md</arg></tool>
+
+### Example 2: Multi-Step Analysis
+User: "Find all Python files and analyze their imports"
+Assistant: 
+<tool name="bash"><arg name="command">find . -name "*.py" -type f</arg></tool>
+
+[After receiving results]
+
+Assistant: <tool name="read"><arg name="file_path">src/main.py</arg></tool>
+
+[After receiving results, continue with more reads if needed]
+
+### Example 3: Edit File
+User: "Add a new function to utils.py"
+Assistant: <tool name="read"><arg name="file_path">utils.py</arg></tool>
+
+[After reading]
+
+Assistant: <tool name="edit">
+  <arg name="file_path">utils.py</arg>
+  <arg name="old_str">def existing_func():
+    pass</arg>
+  <arg name="new_str">def existing_func():
+    pass
+
+def new_function():
+    \"\"\"New utility function.\"\"\"
+    return True</arg>
 </tool>
 
-[System executes tool and returns result]
+[After editing]
 
-Assistant: Now I'll add the new section.
-<tool name="edit">
-  <arg name="file_path">README.md</arg>
-  <arg name="old_str">## Features
-
-- Feature 1
-- Feature 2</arg>
-  <arg name="new_str">## Features
-
-- Feature 1
-- Feature 2
-- Feature 3 (new)</arg>
-</tool>
+Assistant: <tool name="read"><arg name="file_path">utils.py</arg></tool>
 """

@@ -353,6 +353,14 @@ async def _chat_async() -> None:
         title=f"Sun CLI v{__version__}"
     ))
     
+    # Auto-analyze project on startup
+    console.print("\n[dim]正在分析项目...[/dim]")
+    try:
+        await session.stream_message("简要介绍这个项目", max_tool_iterations=3)
+        console.print()
+    except Exception as e:
+        console.print(f"[dim]项目分析跳过: {e}[/dim]\n")
+    
     # Interactive loop
     try:
         while True:
@@ -455,9 +463,6 @@ async def _handle_message(session: ChatSession, message: str) -> None:
         )
         console.print(error_panel)
         return
-    
-    prompt_info = get_prompt_info()
-    console.print(f"\n{prompt_info} [bold blue]Sun CLI[/bold blue]")
     
     try:
         # Stream response with live display
