@@ -45,6 +45,9 @@ class Config(BaseSettings):
     
     # Behavior - Auto Confirmation (Yolo Mode)
     auto_confirm: bool = Field(default=False, description="Skip all confirmations and execute directly")
+    auto_compact: bool = Field(default=True, description="Automatically compact long conversation history")
+    compact_trigger_messages: int = Field(default=40, ge=20, description="Trigger compaction when message count exceeds this value")
+    compact_keep_recent: int = Field(default=16, ge=8, description="How many recent messages to keep uncompressed")
     
     @property
     def is_configured(self) -> bool:
@@ -97,6 +100,9 @@ def update_config(**kwargs) -> Config:
         'max_tokens': 'SUN_MAX_TOKENS',
         'theme': 'SUN_THEME',
         'auto_confirm': 'SUN_AUTO_CONFIRM',
+        'auto_compact': 'SUN_AUTO_COMPACT',
+        'compact_trigger_messages': 'SUN_COMPACT_TRIGGER_MESSAGES',
+        'compact_keep_recent': 'SUN_COMPACT_KEEP_RECENT',
     }
     
     # Update values

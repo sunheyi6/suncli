@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
 from rich.text import Text
+from .task_manager import TaskManager
 
 
 class PlanMode(Enum):
@@ -59,6 +60,8 @@ class PlanModeManager:
         self._mode: PlanMode = PlanMode.INACTIVE
         self._current_plan: Optional[Plan] = None
         self._original_user_input: Optional[str] = None
+        self.task_manager = TaskManager()
+        self._step_task_map: dict[int, int] = {}
     
     @property
     def is_active(self) -> bool:
@@ -99,8 +102,14 @@ class PlanModeManager:
         self._current_plan.steps.clear()
         for step_desc in steps:
             self._current_plan.add_step(step_desc)
+
+        # Persist plan steps into dependency-linked task graph.
+        self._step_task_map = self.task_manager.create_tasks_from_plan(steps)
         
         self._mode = PlanMode.PLANNING
+        self.console.print(
+            f"[dim]Task graph updated at: {self.task_manager.tasks_dir}[/dim]"
+        )
         self.display_plan()
     
     def display_plan(self) -> None:
@@ -154,6 +163,21 @@ class PlanModeManager:
             if step.id == step_id:
                 step.status = status
                 break
+
+        task_id = self._step_task_map.get(step_id)
+        if task_id is not None:
+            try:
+                self.task_manager.update_status(task_id, status)
+            except ValueError as e:
+                self.console.print(f"[yellow]Task status sync skipped: {e}[/yellow]")
+
+    def list_tasks_text(self) -> str:
+        """Get current persisted task board as text."""
+        return self.task_manager.render_text()
+
+    def update_task_status(self, task_id: int, status: str) -> None:
+        """Update a persisted task status manually."""
+        self.task_manager.update_status(task_id, status)
     
     def get_system_prompt(self) -> str:
         """Get system prompt for plan mode."""

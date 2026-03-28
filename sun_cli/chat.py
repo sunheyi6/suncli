@@ -14,7 +14,7 @@ from rich.align import Align
 from rich.panel import Panel
 
 from .config import get_config
-from .models import Conversation, MessageRole
+from .models import Conversation, MessageRole, Message
 from .prompts import get_prompt_manager
 from .mirror_manager import get_mirror_manager
 from .tools import TOOL_DEFINITIONS
@@ -29,6 +29,7 @@ from .context_collector import get_context_collector
 
 class ChatSession:
     """A chat session with an AI model."""
+    COMPACT_MARKER = "[CONTEXT_COMPACT_SUMMARY]"
     
     def __init__(self, console: Console) -> None:
         self.console = console
@@ -189,6 +190,7 @@ class ChatSession:
         """Send a message and get the complete response."""
         # Add user message
         self.conversation.add_message(MessageRole.USER, content)
+        self._maybe_compact_context()
         
         # Call API
         response = await self.client.post(
@@ -227,6 +229,7 @@ class ChatSession:
         """
         # Add user message
         self.conversation.add_message(MessageRole.USER, content)
+        self._maybe_compact_context()
         
         # Start multi-round tool calling loop
         return await self._run_tool_loop(max_iterations=max_tool_iterations)
@@ -247,6 +250,7 @@ class ChatSession:
         
         while iteration < max_iterations:
             iteration += 1
+            self._maybe_compact_context()
             
             # Get AI response (without displaying for intermediate rounds)
             # We check if this is the final round after parsing tool calls
@@ -257,6 +261,7 @@ class ChatSession:
             
             if not tool_calls:
                 # No tool calls, this is the final response - display it now
+                self._try_capture_plan_from_response(full_content)
                 self.conversation.add_message(MessageRole.ASSISTANT, full_content)
                 self.console.print(Markdown(full_content))
                 return full_content
@@ -275,6 +280,7 @@ class ChatSession:
         # Max iterations reached - get final response with display
         self.console.print(f"[yellow]已达到最大工具调用次数 ({max_iterations})，生成最终回复...[/yellow]")
         final_content = await self._stream_ai_response(display_output=True)
+        self._try_capture_plan_from_response(final_content)
         self.conversation.add_message(MessageRole.ASSISTANT, final_content)
         return final_content
     
@@ -514,7 +520,137 @@ class ChatSession:
     def get_plan_mode(self) -> PlanMode:
         """Get current plan mode state."""
         return self.plan_manager.mode
+
+    def list_tasks_text(self) -> str:
+        """Get persisted task board text."""
+        return self.plan_manager.list_tasks_text()
+
+    def update_task_status(self, task_id: int, status: str) -> None:
+        """Update persisted task status."""
+        self.plan_manager.update_task_status(task_id, status)
     
     async def close(self) -> None:
         """Close the HTTP client."""
         await self.client.aclose()
+
+    def _maybe_compact_context(self) -> None:
+        """Compact long conversation history to avoid unbounded context growth."""
+        if not self.config.auto_compact:
+            return
+
+        messages = self.conversation.messages
+        if len(messages) <= self.config.compact_trigger_messages:
+            return
+
+        keep_recent = max(8, self.config.compact_keep_recent)
+        anchor = messages[0] if messages and messages[0].role == MessageRole.SYSTEM else None
+        tail = messages[-keep_recent:] if keep_recent < len(messages) else list(messages)
+        tail = [
+            msg for msg in tail
+            if not (msg.role == MessageRole.SYSTEM and (msg.content or "").startswith(self.COMPACT_MARKER))
+        ]
+
+        # Build the middle segment to compact
+        middle_start = 1 if anchor else 0
+        middle_end = max(middle_start, len(messages) - keep_recent)
+        middle = messages[middle_start:middle_end]
+        if not middle:
+            return
+
+        summary = self._build_compact_summary(middle)
+        compact_message = Message(role=MessageRole.SYSTEM, content=f"{self.COMPACT_MARKER}\n{summary}")
+
+        new_messages = []
+        if anchor:
+            new_messages.append(anchor)
+        new_messages.append(compact_message)
+        new_messages.extend(tail)
+
+        self.conversation.messages = new_messages
+        self.console.print(
+            f"[dim]上下文已压缩: {len(messages)} -> {len(new_messages)} 条消息[/dim]"
+        )
+
+    def _build_compact_summary(self, messages) -> str:
+        """Build a concise text summary from old messages."""
+        summary_lines = [
+            "Conversation history was compacted. Key points from older messages:"
+        ]
+
+        for msg in messages:
+            content = (msg.content or "").strip()
+            if not content:
+                continue
+            if content.startswith(self.COMPACT_MARKER):
+                # Avoid nesting summaries repeatedly.
+                summary_lines.append("- Previous compact summary retained.")
+                continue
+
+            role = msg.role.value
+            single_line = " ".join(content.split())
+            snippet = single_line[:180] + ("..." if len(single_line) > 180 else "")
+            summary_lines.append(f"- {role}: {snippet}")
+
+            if len(summary_lines) >= 40:
+                summary_lines.append("- ...")
+                break
+
+        return "\n".join(summary_lines)
+
+    def _try_capture_plan_from_response(self, content: str) -> None:
+        """Parse a plan from assistant output and persist it to task graph."""
+        if not self.plan_manager.is_active or self.plan_manager.mode != PlanMode.PLANNING:
+            return
+
+        title, description, steps = self._extract_plan_sections(content)
+        if len(steps) < 2:
+            return
+
+        self.plan_manager.set_plan(title=title, description=description, steps=steps)
+
+    def _extract_plan_sections(self, content: str) -> tuple[str, str, list[str]]:
+        """Extract title/description/steps from markdown-like plan text."""
+        lines = [line.strip() for line in content.splitlines()]
+        title = "Implementation Plan"
+        description = "Plan generated from assistant response."
+        steps: list[str] = []
+
+        for line in lines:
+            if line.startswith("# "):
+                title = line[2:].strip() or title
+                break
+
+        for i, line in enumerate(lines):
+            normalized = line.lower().strip()
+            if normalized.startswith("## implementation steps") or normalized.startswith("## steps"):
+                description_lines = [x for x in lines[:i] if x and not x.startswith("#")]
+                if description_lines:
+                    description = description_lines[-1]
+                break
+
+        step_patterns = [
+            re.compile(r"^\d+\.\s+(.+)$"),
+            re.compile(r"^[-*]\s+(.+)$"),
+            re.compile(r"^(?:⏳|✅|🔄)?\s*\*\*step\s*\d+\s*:\*\*\s*(.+)$", re.IGNORECASE),
+            re.compile(r"^(?:⏳|✅|🔄)?\s*step\s*\d+\s*:\s*(.+)$", re.IGNORECASE),
+        ]
+
+        for line in lines:
+            for pattern in step_patterns:
+                match = pattern.match(line)
+                if match:
+                    step = match.group(1).strip()
+                    if step:
+                        steps.append(step)
+                    break
+
+        deduped_steps = []
+        seen = set()
+        for step in steps:
+            key = step.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped_steps.append(step)
+
+        return title, description, deduped_steps

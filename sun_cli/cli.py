@@ -379,6 +379,9 @@ async def _chat_async() -> None:
         console.print(f"[dim]项目分析跳过: {e}[/dim]\n")
     
     # Interactive loop
+    awaiting_plan_input = False
+    awaiting_plan_modify = False
+
     try:
         while True:
             try:
@@ -400,6 +403,18 @@ async def _chat_async() -> None:
                     console.print(f"[dim]$ {shell_cmd}[/dim]")
                     execute_shell_command(shell_cmd, console)
                     continue
+
+                # Handle plan mode input states
+                if awaiting_plan_input and not user_input.startswith("/"):
+                    awaiting_plan_input = False
+                    session.enter_plan_mode(user_input)
+                    await _handle_message(session, user_input)
+                    continue
+
+                if awaiting_plan_modify and not user_input.startswith("/"):
+                    awaiting_plan_modify = False
+                    await _handle_message(session, f"Please modify the current plan based on this feedback:\n{user_input}")
+                    continue
                 
                 # Check for skill intents
                 if await skill_manager.handle(user_input):
@@ -407,6 +422,7 @@ async def _chat_async() -> None:
                 
                 # Handle built-in commands (start with /)
                 if user_input.startswith("/"):
+                    parts = user_input.strip().split()
                     if user_input == "/help":
                         _show_help(skill_manager)
                     elif user_input == "/m":
@@ -432,7 +448,11 @@ async def _chat_async() -> None:
                             console.print("[yellow]Already in plan mode.[/yellow]")
                         else:
                             console.print("[cyan]Enter your task to create a plan:[/cyan]")
+                            awaiting_plan_input = True
+                            awaiting_plan_modify = False
                     elif user_input == "/approve":
+                        awaiting_plan_input = False
+                        awaiting_plan_modify = False
                         if session.is_in_plan_mode():
                             if session.approve_plan():
                                 console.print("[green]Plan approved! Executing...[/green]")
@@ -443,13 +463,31 @@ async def _chat_async() -> None:
                     elif user_input == "/modify":
                         if session.is_in_plan_mode():
                             console.print("[cyan]Describe the changes you want to make to the plan:[/cyan]")
+                            awaiting_plan_modify = True
+                            awaiting_plan_input = False
                         else:
                             console.print("[yellow]Not in plan mode. Use /plan to start.[/yellow]")
                     elif user_input == "/cancel":
+                        awaiting_plan_input = False
+                        awaiting_plan_modify = False
                         if session.is_in_plan_mode():
                             session.cancel_plan_mode()
                         else:
                             console.print("[yellow]Not in plan mode.[/yellow]")
+                    elif user_input == "/tasks":
+                        console.print(Panel(
+                            session.list_tasks_text(),
+                            title="Task Board (.tasks)",
+                            border_style="cyan"
+                        ))
+                    elif len(parts) == 3 and parts[0] == "/task":
+                        try:
+                            task_id = int(parts[1])
+                            status = parts[2]
+                            session.update_task_status(task_id, status)
+                            console.print(f"[green]Task #{task_id} -> {status}[/green]")
+                        except ValueError as e:
+                            console.print(f"[red]{e}[/red]")
                     else:
                         console.print(f"[red]Unknown command:[/red] {user_input}")
                     continue
@@ -498,6 +536,8 @@ def _show_help(skill_manager) -> None:
   [yellow]/clear[/yellow]       - Clear conversation history
   [yellow]/new[/yellow]         - Start a new conversation
   [yellow]/config[/yellow]      - Show current configuration
+  [yellow]/tasks[/yellow]       - Show persisted task board (.tasks)
+  [yellow]/task <id> <status>[/yellow] - Update task status (pending/in_progress/completed)
 
 [bold]Configuration:[/bold]
   Configure API settings:
