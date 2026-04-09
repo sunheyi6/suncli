@@ -87,7 +87,7 @@ class PlanModeManager:
             description=f"Plan for: {user_input}"
         )
         self.console.print(Panel(
-            "[bold cyan]📋 Entering Plan Mode[/bold cyan]\n\n"
+            "[bold cyan][Plan] Entering Plan Mode[/bold cyan]\n\n"
             "[dim]AI will create a plan before executing. You can review and approve the plan before implementation.[/dim]",
             border_style="cyan"
         ))
@@ -121,7 +121,7 @@ class PlanModeManager:
         plan_md = self._current_plan.to_markdown()
         self.console.print(Panel(
             Markdown(plan_md),
-            title="[bold cyan]📋 Plan Preview[/bold cyan]",
+            title="[bold cyan][Plan] Plan Preview[/bold cyan]",
             border_style="cyan"
         ))
         

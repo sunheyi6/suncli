@@ -42,7 +42,7 @@ class CodeBlock:
         )
         
         # Create header with language and copy hint
-        header_text = f"📋 {self.language.upper() if self.language else 'CODE'}"
+        header_text = f"[Code] {self.language.upper() if self.language else 'CODE'}"
         
         return Panel(
             syntax,
@@ -151,7 +151,7 @@ def create_command_block(commands: list[str], description: str = "") -> Panel:
         title=title,
         title_align="left",
         border_style="green",
-        subtitle="[dim]📋 点击复制 / Click to copy[/dim]",
+        subtitle="[dim]Click to copy / 点击复制[/dim]",
         subtitle_align="right",
         padding=(0, 0),
     )

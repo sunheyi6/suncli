@@ -98,11 +98,21 @@ class ChatSession:
             
             # Show context summary to user
             context_summary = context_collector.collect()
-            if context_summary.project_name:
+            if context_summary.agents_md_found:
+                # AGENTS.md found - show Codex-style message
+                self.console.print(Panel(
+                    f"[bold]{context_summary.root_path.name}[/bold]\n"
+                    f"[dim]{context_summary.root_path}[/dim]\n"
+                    f"[green][OK] AGENTS.md found - Project context loaded[/green]",
+                    title="[blue][Project] 已加载项目信息[/blue]",
+                    border_style="blue"
+                ))
+            elif context_summary.project_name:
+                # Fallback to automatic project scanning
                 self.console.print(Panel(
                     f"[bold]{context_summary.project_name}[/bold] ({context_summary.project_type})\n"
                     f"[dim]{context_summary.root_path}[/dim]",
-                    title="[blue]📂 已加载项目信息[/blue]",
+                    title="[blue][Project] 已加载项目信息[/blue]",
                     border_style="blue"
                 ))
             
@@ -110,7 +120,7 @@ class ChatSession:
             system_prompt = f"{system_prompt}\n\n{project_context}"
         except Exception as e:
             # Don't fail if context collection fails
-            self.console.print(f"[dim]⚠️ 无法加载项目信息: {e}[/dim]")
+            self.console.print(f"[dim][!] 无法加载项目信息: {e}[/dim]")
         
         # Combine all prompts
         if plan_mode_prompt:
@@ -162,7 +172,7 @@ class ChatSession:
             lang_display = language.upper() if language else "CODE"
             panel = Panel(
                 syntax,
-                title=f"[bold cyan]📋 {lang_display}[/bold cyan]",
+                title=f"[bold cyan][Code] {lang_display}[/bold cyan]",
                 title_align="left",
                 border_style="cyan",
                 subtitle="[dim]💡 选中复制 / Select to copy[/dim]",

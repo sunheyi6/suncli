@@ -189,11 +189,11 @@ You have access to powerful tools (read, write, edit, bash). You can call tools 
 Example workflow:
 ```
 User: "Check what Python files we have and update main.py"
-→ bash (find Python files)
-→ read (examine main.py)
-→ edit (make changes)
-→ read (verify changes)
-→ Final answer
+> bash (find Python files)
+> read (examine main.py)
+> edit (make changes)
+> read (verify changes)
+> Final answer
 ```
 
 ## Communication Style

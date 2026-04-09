@@ -2,7 +2,8 @@
 
 import asyncio
 import os
-from typing import Optional
+import re
+from typing import Iterable, Optional
 
 import typer
 from rich.console import Console
@@ -24,6 +25,63 @@ from .models_presets import (
     ModelPreset,
 )
 
+# Try to import prompt_toolkit for enhanced input with real-time hints
+try:
+    from prompt_toolkit.application.current import get_app_or_none
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.completion import (
+        CompleteEvent,
+        Completer,
+        Completion,
+        FuzzyCompleter,
+        WordCompleter,
+    )
+    from prompt_toolkit.data_structures import Point
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.filters import Condition, has_completions, has_focus, is_done
+    from prompt_toolkit.formatted_text import FormattedText
+    from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
+    from prompt_toolkit.layout.containers import ConditionalContainer, Float, FloatContainer, HSplit, Window
+    from prompt_toolkit.layout.controls import UIContent, UIControl
+    from prompt_toolkit.layout.dimension import Dimension
+    from prompt_toolkit.layout.menus import CompletionsMenu
+    from prompt_toolkit.shortcuts.prompt import CompleteStyle
+    from prompt_toolkit.styles import Style
+    from prompt_toolkit.utils import get_cwidth
+    HAS_PROMPT_TOOLKIT = True
+except ImportError:
+    HAS_PROMPT_TOOLKIT = False
+    get_app_or_none = None
+    PromptSession = None
+    Buffer = None
+    CompleteEvent = None
+    Completer = None
+    Completion = None
+    CompleteStyle = None
+    WordCompleter = None
+    Point = None
+    Document = None
+    Condition = None
+    has_completions = None
+    has_focus = None
+    is_done = None
+    FormattedText = None
+    FuzzyCompleter = None
+    KeyBindings = None
+    KeyPressEvent = None
+    ConditionalContainer = None
+    Float = None
+    FloatContainer = None
+    HSplit = None
+    Window = None
+    UIContent = None
+    UIControl = None
+    Dimension = None
+    CompletionsMenu = None
+    get_cwidth = None
+    Style = None
+
 # Rich console for beautiful output
 console = Console()
 
@@ -38,20 +96,457 @@ def get_prompt_info() -> str:
         return "[cyan]user[/cyan]@[dim].[/dim]"
 
 
-def get_multiline_input(prompt: str = "You") -> str:
-    """Get input from user.
+def get_prompt_plain_text() -> str:
+    """Get current user and path info for prompt_toolkit prompt display."""
+    try:
+        username = os.getenv("USERNAME") or os.getenv("USER") or "user"
+        cwd = os.getcwd()
+        return f"{username}@{cwd}"
+    except Exception:
+        return "user@."
+
+
+# Command hints data
+QUICK_HINTS = {
+    "?": [
+        ("exit, quit", "退出 Sun CLI"),
+        ("/help", "显示完整帮助"),
+        ("/m", "模型命令"),
+        ("/clear", "清除历史"),
+        ("/new", "新对话"),
+        ("/plan", "计划模式"),
+        ("/tasks", "任务板"),
+        ("!cmd", "执行shell"),
+    ],
+}
+
+SLASH_COMMANDS = [
+    ("/help", "显示帮助信息", "显示帮助信息"),
+    ("/m", "显示模型相关命令", "显示模型相关命令"),
+    ("/clear", "清除当前对话历史", "清除当前对话历史"),
+    ("/new", "开始一个新对话", "开始一个新对话"),
+    ("/config", "显示当前配置信息", "显示当前配置信息"),
+    ("/plan", "进入计划模式", "进入计划模式"),
+    ("/approve", "批准当前计划", "批准当前计划"),
+    ("/modify", "修改当前计划", "修改当前计划"),
+    ("/cancel", "取消计划模式", "取消计划模式"),
+    ("/tasks", "显示任务板", "显示任务板"),
+    ("/task <id> <status>", "更新任务状态", "更新任务状态"),
+    ("/exit", "退出 Sun CLI", "退出 Sun CLI"),
+    ("/quit", "退出 Sun CLI", "退出 Sun CLI"),
+]
+
+
+class SlashCommandCompleter(Completer):
+    """Realtime completer for slash commands."""
+
+    def __init__(self) -> None:
+        self._commands = []
+        self._lookup = {}
+        words = []
+        for cmd, cn_desc, _ in SLASH_COMMANDS:
+            base_cmd = cmd.split()[0]
+            slash_name = base_cmd[1:]
+            self._commands.append((base_cmd, cn_desc))
+            self._lookup[slash_name] = (base_cmd, cn_desc)
+            words.append(slash_name)
+
+        self._word_pattern = re.compile(r"[^\s]+")
+        self._word_completer = WordCompleter(words, WORD=False, pattern=self._word_pattern)
+        self._fuzzy = FuzzyCompleter(self._word_completer, WORD=False, pattern=r"^[^\s]*")
+
+    @staticmethod
+    def should_complete(document: Document) -> bool:
+        text = document.text_before_cursor
+        if document.text_after_cursor.strip():
+            return False
+
+        last_space = text.rfind(" ")
+        token = text[last_space + 1:]
+        prefix = text[: last_space + 1] if last_space != -1 else ""
+        return not prefix.strip() and token.startswith("/")
+
+    def get_completions(self, document: Document, complete_event: CompleteEvent) -> Iterable[Completion]:
+        if not self.should_complete(document):
+            return
+
+        text = document.text_before_cursor
+        last_space = text.rfind(" ")
+        token = text[last_space + 1:]
+        typed = token[1:]
+
+        if typed and typed in self._lookup:
+            return
+
+        fuzzy_doc = Document(text=typed, cursor_position=len(typed))
+        seen = set()
+        for candidate in self._fuzzy.get_completions(fuzzy_doc, complete_event):
+            match = self._lookup.get(candidate.text)
+            if not match:
+                continue
+            base_cmd, cn_desc = match
+            if base_cmd in seen:
+                continue
+            seen.add(base_cmd)
+            yield Completion(
+                text=base_cmd,
+                start_position=-len(token),
+                display=base_cmd,
+                display_meta=cn_desc,
+            )
+
+
+def _truncate_to_width(text: str, width: int) -> str:
+    if width <= 0:
+        return ""
+
+    total = 0
+    chars = []
+    for ch in text:
+        ch_width = get_cwidth(ch)
+        if total + ch_width > width:
+            break
+        chars.append(ch)
+        total += ch_width
+
+    if total == get_cwidth(text):
+        return text + (" " * max(0, width - total))
+
+    ellipsis = "..."
+    ellipsis_width = get_cwidth(ellipsis)
+    if width <= ellipsis_width:
+        return "." * width
+
+    available = width - ellipsis_width
+    total = 0
+    chars = []
+    for ch in text:
+        ch_width = get_cwidth(ch)
+        if total + ch_width > available:
+            break
+        chars.append(ch)
+        total += ch_width
+    return "".join(chars) + ellipsis + (" " * max(0, width - total - ellipsis_width))
+
+
+class SlashCommandMenuControl(UIControl):
+    """Render slash command completions inline below the prompt."""
+
+    _HORIZONTAL_PADDING = 1
+    _COLUMN_GAP = 3
+
+    def preferred_width(self, max_available_width: int) -> int | None:
+        return max_available_width
+
+    def preferred_height(self, width: int, max_available_height: int, wrap_lines: bool, get_line_prefix) -> int | None:
+        app = get_app_or_none()
+        complete_state = getattr(app.current_buffer, "complete_state", None) if app else None
+        if complete_state is None:
+            return 0
+        return min(max_available_height, len(complete_state.completions))
+
+    def create_content(self, width: int, height: int) -> UIContent:
+        app = get_app_or_none()
+        complete_state = getattr(app.current_buffer, "complete_state", None) if app else None
+        if complete_state is None or not complete_state.completions:
+            return UIContent()
+
+        completions = complete_state.completions[: max(0, height)]
+        selected_index = complete_state.complete_index
+
+        usable_width = max(0, width - self._HORIZONTAL_PADDING)
+        command_width = min(
+            max((get_cwidth(item.display_text) for item in completions), default=16) + 2,
+            max(18, usable_width // 4),
+        )
+        marker_width = 2
+        meta_width = max(0, usable_width - marker_width - command_width - self._COLUMN_GAP)
+
+        lines = []
+        for index, completion in enumerate(completions):
+            is_current = selected_index == index
+            marker = "› " if is_current else "  "
+            marker_style = "class:slash-menu.current" if is_current else "class:slash-menu"
+            command_style = "class:slash-menu.command.current" if is_current else "class:slash-menu.command"
+            meta_style = "class:slash-menu.meta.current" if is_current else "class:slash-menu.meta"
+
+            fragments = FormattedText()
+            fragments.append(("class:slash-menu", " " * self._HORIZONTAL_PADDING))
+            fragments.append((marker_style, marker))
+            fragments.append((command_style, _truncate_to_width(completion.display_text, command_width)))
+            fragments.append(("class:slash-menu", " " * self._COLUMN_GAP))
+            meta_text = _truncate_to_width(completion.display_meta_text, meta_width)
+            fragments.append((meta_style, meta_text))
+            trailing = max(
+                0,
+                width
+                - self._HORIZONTAL_PADDING
+                - marker_width
+                - command_width
+                - self._COLUMN_GAP
+                - get_cwidth(meta_text),
+            )
+            fragments.append(("class:slash-menu", " " * trailing))
+            lines.append(fragments)
+
+        return UIContent(
+            get_line=lambda i: lines[i],
+            line_count=len(lines),
+            cursor_position=Point(x=0, y=0),
+        )
+
+
+def _find_float_container(container) -> Optional[FloatContainer]:
+    if isinstance(container, FloatContainer):
+        return container
+
+    content = getattr(container, "content", None)
+    if content is not None:
+        found = _find_float_container(content)
+        if found is not None:
+            return found
+
+    children = getattr(container, "children", None)
+    if children:
+        for child in children:
+            found = _find_float_container(child)
+            if found is not None:
+                return found
+
+    return None
+
+
+def _install_inline_slash_menu(session: PromptSession, completer: SlashCommandCompleter) -> None:
+    """Install inline slash command menu below the input line.
+
+    This function modifies the PromptSession layout to display completions
+    inline (below the input line) instead of in a floating popup.
+    """
+    from prompt_toolkit.layout.containers import VSplit
+
+    container = session.layout.container
+
+    float_container = _find_float_container(container)
+    if not isinstance(float_container, FloatContainer):
+        return
+
+    slash_menu_filter = (
+        has_focus(session.default_buffer)
+        & has_completions
+        & ~is_done
+        & Condition(lambda: completer.should_complete(session.default_buffer.document))
+    )
+
+    # Create the inline menu container
+    inline_menu = ConditionalContainer(
+        Window(
+            content=SlashCommandMenuControl(),
+            dont_extend_height=True,
+            height=Dimension(max=10),
+            style="class:slash-menu",
+        ),
+        filter=slash_menu_filter,
+    )
+
+    # Get or create the HSplit that contains the input window
+    # The default PromptSession layout uses FloatContainer -> HSplit
+    if isinstance(float_container.content, HSplit):
+        # Add inline menu to existing HSplit (at the end, below input)
+        float_container.content.children.append(inline_menu)
+    elif isinstance(float_container.content, VSplit):
+        # Wrap VSplit in HSplit with menu at the bottom
+        old_content = float_container.content
+        float_container.content = HSplit([old_content, inline_menu])
+    else:
+        # For any other layout type, wrap in HSplit
+        old_content = float_container.content
+        float_container.content = HSplit([old_content, inline_menu])
+
+    # Hide all default floating completion menus - completely disable them
+    floats_to_remove = []
+    for i, float_ in enumerate(float_container.floats):
+        if isinstance(float_.content, CompletionsMenu):
+            floats_to_remove.append(i)
+
+    # Remove CompletionsMenu floats (in reverse order to preserve indices)
+    for i in reversed(floats_to_remove):
+        del float_container.floats[i]
+
+
+def _create_prompt_key_bindings(session_getter, completer: SlashCommandCompleter):
+    """Create key bindings for slash menu behavior."""
+    bindings = KeyBindings()
+
+    @bindings.add("enter")
+    def _(event: KeyPressEvent) -> None:
+        buffer = event.current_buffer
+        is_slash = (
+            buffer.complete_state
+            and buffer.complete_state.completions
+            and completer.should_complete(buffer.document)
+        )
+        if is_slash:
+            completion = buffer.complete_state.current_completion or buffer.complete_state.completions[0]
+            buffer.apply_completion(completion)
+            buffer.validate_and_handle()
+            return
+        event.app.exit(result=buffer.text)
+
+    @bindings.add("down")
+    def _(event: KeyPressEvent) -> None:
+        buffer = event.current_buffer
+        is_slash = (
+            buffer.complete_state
+            and buffer.complete_state.completions
+            and completer.should_complete(buffer.document)
+        )
+        if is_slash:
+            buffer.complete_next()
+            return
+        buffer.auto_down()
+
+    @bindings.add("up")
+    def _(event: KeyPressEvent) -> None:
+        buffer = event.current_buffer
+        is_slash = (
+            buffer.complete_state
+            and buffer.complete_state.completions
+            and completer.should_complete(buffer.document)
+        )
+        if is_slash:
+            buffer.complete_previous()
+            return
+        buffer.auto_up()
+
+    return bindings
+
+
+def _show_quick_help() -> None:
+    """Show quick command hints when user types '?'"""
+    from rich.table import Table
+    
+    table = Table(show_header=True, header_style="bold magenta", border_style="cyan")
+    table.add_column("命令", style="cyan", width=20)
+    table.add_column("说明", style="green", width=50)
+    
+    for cmd, desc in QUICK_HINTS["?"]:
+        table.add_row(cmd, desc)
+    
+    console.print(Panel(
+        table,
+        title="[bold blue]快捷命令提示[/bold blue]",
+        border_style="blue"
+    ))
+
+
+def _show_slash_commands() -> None:
+    """Show all slash commands with descriptions when user types '/'"""
+    from rich.table import Table
+    
+    table = Table(show_header=True, header_style="bold magenta", border_style="cyan")
+    table.add_column("命令", style="cyan", width=20)
+    table.add_column("中文说明", style="green", width=35)
+    table.add_column("English", style="dim", width=35)
+    
+    for cmd, cn_desc, en_desc in SLASH_COMMANDS:
+        table.add_row(cmd, cn_desc, en_desc)
+    
+    console.print(Panel(
+        table,
+        title="[bold blue]斜杠命令列表[/bold blue] [dim]输入命令后按回车执行[/dim]",
+        border_style="blue"
+    ))
+
+
+def _is_interactive() -> bool:
+    """Check if running in an interactive terminal."""
+    import sys
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _get_bottom_toolbar_text(text: str) -> str:
+    """Generate bottom toolbar text based on current input."""
+    text = text.strip()
+    
+    # Show hints when typing /
+    if text.startswith("/"):
+        # Filter matching commands
+        search = text[1:]  # Remove the leading /
+        matches = []
+        for cmd, cn_desc, _ in SLASH_COMMANDS:
+            if search.lower() in cmd.lower() or search.lower() in cn_desc.lower():
+                matches.append((cmd, cn_desc))
+        
+        if matches:
+            # Format matches for display (limit to 3)
+            lines = []
+            for i, (cmd, desc) in enumerate(matches[:3]):
+                lines.append(f"<b>{cmd}</b> {desc}")
+            if len(matches) > 3:
+                lines.append(f"... 还有 {len(matches) - 3} 个命令")
+            return f"<style bg='#1e293b' fg='#94a3b8'> {' | '.join(lines)} </style>"
+        else:
+            return "<style bg='#1e293b' fg='#64748b'> 无匹配命令 </style>"
+    
+    # Show hint for ?
+    if text == "?":
+        hints = " | ".join([f"<b>{cmd}</b>" for cmd, desc in QUICK_HINTS["?"][:5]])
+        return f"<style bg='#1e293b' fg='#94a3b8'> {hints}... </style>"
+    
+    # Default hint
+    return "<style bg='#1e293b' fg='#64748b'> [?]快捷提示 [/]斜杠命令 [Enter]发送 [Ctrl+C]取消 </style>"
+
+
+async def _get_input_with_hints(prompt_info: str) -> str:
+    """Get input with inline slash command menu (embedded below input line)."""
+    # Check if we're in an interactive terminal
+    if not _is_interactive():
+        return _get_input_simple(prompt_info)
+    
+    try:
+        from .input_hints import get_input_with_inline_menu
+        return await get_input_with_inline_menu(get_prompt_plain_text(), SLASH_COMMANDS)
+    except Exception as e:
+        # Fall back to simple input
+        return _get_input_simple(prompt_info)
+
+
+def _get_input_simple(prompt_info: str) -> str:
+    """Get input using standard console (fallback when prompt_toolkit not available)."""
+    return console.input(f"{prompt_info} > ")
+
+
+async def get_multiline_input(prompt: str = "You") -> str:
+    """Get input from user with real-time command hints.
     
     Press Enter to send. Single-line commands (exit, quit, /help, etc.) are executed immediately.
     Press Ctrl+C to cancel.
+    
+    Real-time hints (when prompt_toolkit is available):
+      - Type '?' to see quick command hints in bottom toolbar
+      - Type '/' to see slash commands in bottom toolbar
     """
     prompt_info = get_prompt_info()
     
     try:
-        line = console.input(f"{prompt_info} > ")
+        if HAS_PROMPT_TOOLKIT:
+            line = await _get_input_with_hints(prompt_info)
+        else:
+            line = _get_input_simple(prompt_info)
         
         # Handle empty line
         if line == "":
             return ""
+        
+        # Handle '?' for quick help (show full panel)
+        if line.strip() == "?":
+            _show_quick_help()
+            return ""  # Return empty to continue input loop
+        
+        # Handle '/' for slash command hints (show full panel)
+        if line.strip() == "/":
+            _show_slash_commands()
+            return ""  # Return empty to continue input loop
         
         # Handle single-line commands - execute immediately
         single_line_commands = ["exit", "quit", "/quit", "/exit", "/help", "/clear", "/new", "/config"]
@@ -74,6 +569,8 @@ def get_multiline_input(prompt: str = "You") -> str:
     except KeyboardInterrupt:
         console.print("\n[dim]Input cancelled.[/dim]")
         return ""
+    except EOFError:
+        return "exit"
 
 # Create Typer app with invoke_without_command=True
 app = typer.Typer(
@@ -138,7 +635,7 @@ def config(
     cfg = get_config()
     
     if show:
-        yolo_status = "[green]✓ 已启用[/green]" if cfg.yolo_mode else "[dim]已禁用[/dim]"
+        yolo_status = "[green][OK] 已启用[/green]" if cfg.yolo_mode else "[dim]已禁用[/dim]"
         console.print(Panel.fit(
             f"[bold]Current Configuration[/bold]\n\n"
             f"API Key: {'[green][OK] Set[/green]' if cfg.is_configured else '[red][X] Not set[/red]'}\n"
@@ -165,7 +662,7 @@ def config(
     if auto_confirm is True:
         update_config(auto_confirm=True)
         console.print("[green][OK][/green] 自动确认模式已启用！[/green] 所有操作将直接执行，不再询问确认。")
-        console.print("[yellow]⚠️ 警告：此模式下文件修改和Git操作将自动执行，请谨慎使用！[/yellow]")
+        console.print("[yellow][!] 警告：此模式下文件修改和Git操作将自动执行，请谨慎使用！[/yellow]")
     
     if no_confirm is True:
         update_config(auto_confirm=False)
@@ -366,17 +863,23 @@ async def _chat_async() -> None:
         f"[bold blue]Welcome to Sun CLI[/bold blue]\n"
         f"[dim]Current:[/dim] {prompt_info}\n"
         f"Model: [cyan]{cfg.model}[/cyan]\n"
-        f"Type [yellow]/help[/yellow] for commands | [yellow]/m[/yellow] for model commands | [yellow]exit[/yellow] or [yellow]/quit[/yellow] to exit",
+        f"Type [yellow]/help[/yellow] for commands | [yellow]?[/yellow] for quick hints | [yellow]/[/yellow] for slash commands | [yellow]exit[/yellow] to quit",
         title=f"Sun CLI v{__version__}"
     ))
     
-    # Auto-analyze project on startup
-    console.print("\n[dim]正在分析项目...[/dim]")
-    try:
-        await session.stream_message("简要介绍这个项目", max_tool_iterations=3)
-        console.print()
-    except Exception as e:
-        console.print(f"[dim]项目分析跳过: {e}[/dim]\n")
+    # Auto-analyze project on startup (only if no AGENTS.md)
+    from .context_collector import get_context_collector
+    context_collector = get_context_collector(console)
+    context_summary = context_collector.collect()
+    
+    if not context_summary.agents_md_found:
+        # No AGENTS.md found - do automatic project analysis
+        console.print("\n[dim]正在分析项目...[/dim]")
+        try:
+            await session.stream_message("简要介绍这个项目", max_tool_iterations=3)
+            console.print()
+        except Exception as e:
+            console.print(f"[dim]项目分析跳过: {e}[/dim]\n")
     
     # Interactive loop
     awaiting_plan_input = False
@@ -386,7 +889,7 @@ async def _chat_async() -> None:
         while True:
             try:
                 # Get user input (multiline)
-                user_input = get_multiline_input()
+                user_input = await get_multiline_input()
                 
                 # Handle empty input
                 if not user_input.strip():
@@ -539,6 +1042,10 @@ def _show_help(skill_manager) -> None:
   [yellow]/tasks[/yellow]       - Show persisted task board (.tasks)
   [yellow]/task <id> <status>[/yellow] - Update task status (pending/in_progress/completed)
 
+[bold]快捷提示:[/bold]
+  [yellow]?[/yellow]             - 显示快捷命令提示
+  [yellow]/[/yellow]             - 显示所有斜杠命令列表
+
 [bold]Configuration:[/bold]
   Configure API settings:
     [cyan]suncli config --api-key <key>[/cyan]    - Set API key
@@ -579,6 +1086,7 @@ def _show_help(skill_manager) -> None:
   - Type any message without prefix to chat with AI
   - Use [cyan]Ctrl+C[/cyan] to interrupt response generation
   - Conversation history is maintained until you exit
+  - Type [yellow]?[/yellow] for quick command hints, [yellow]/[/yellow] for slash commands
 """
     console.print(Panel(help_text, title="Help", border_style="blue"))
 

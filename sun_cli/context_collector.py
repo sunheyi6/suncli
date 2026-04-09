@@ -1,8 +1,7 @@
 """Automatic context collection for Sun CLI.
 
-This module provides intelligent project context gathering, similar to Claude Code's
-automatic project awareness. It detects project type, reads key files, and builds
-a comprehensive context for the AI.
+This module provides intelligent project context gathering, similar to Codex's
+AGENTS.md approach. It prioritizes reading AGENTS.md files over automatic project scanning.
 """
 
 import os
@@ -27,6 +26,8 @@ class ProjectContext:
     recent_changes: List[str] = field(default_factory=list)
     git_info: Dict[str, Any] = field(default_factory=dict)
     summary: str = ""
+    agents_md_content: str = ""  # AGENTS.md content if found
+    agents_md_found: bool = False  # Whether AGENTS.md was found
 
 
 class ContextCollector:
@@ -42,7 +43,10 @@ class ContextCollector:
         "ruby": ["Gemfile", "*.gemspec"],
     }
     
-    # Key files to read for each project type
+    # AGENTS.md file names to look for (in order of priority)
+    AGENTS_MD_FILES = ["AGENTS.md", ".kimi/AGENTS.md", ".agents.md"]
+    
+    # Key files to read for each project type (fallback when no AGENTS.md)
     KEY_FILES = {
         "python": ["pyproject.toml", "setup.py", "requirements.txt", "README.md", "README.rst"],
         "nodejs": ["package.json", "README.md", "tsconfig.json"],
@@ -59,8 +63,28 @@ class ContextCollector:
         self._cache_timestamp: float = 0
         self._cache_ttl: int = 60  # Cache TTL in seconds
     
+    def _find_and_read_agents_md(self, root: Path) -> tuple[bool, str, Path]:
+        """Find and read AGENTS.md file.
+        
+        Returns:
+            Tuple of (found, content, file_path)
+        """
+        for agents_file in self.AGENTS_MD_FILES:
+            file_path = root / agents_file
+            if file_path.exists() and file_path.is_file():
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="ignore")
+                    return True, content, file_path
+                except Exception:
+                    continue
+        return False, "", root
+
     def collect(self, root_path: Optional[Path] = None, force_refresh: bool = False) -> ProjectContext:
         """Collect project context.
+        
+        Priority:
+        1. If AGENTS.md exists, read it and skip automatic project scanning
+        2. Otherwise, fall back to automatic project detection and scanning
         
         Args:
             root_path: Project root path (default: current working directory)
@@ -79,6 +103,23 @@ class ContextCollector:
         
         context = ProjectContext(root_path=root)
         
+        # First, try to find AGENTS.md (Codex-style)
+        agents_found, agents_content, agents_path = self._find_and_read_agents_md(root)
+        context.agents_md_found = agents_found
+        
+        if agents_found:
+            # AGENTS.md found - use it as the primary context source
+            context.agents_md_content = agents_content
+            context.project_name = root.name
+            context.summary = f"AGENTS.md found at {agents_path.relative_to(root) if agents_path != root else 'AGENTS.md'}"
+            
+            # Cache result
+            self._context_cache = context
+            import time
+            self._cache_timestamp = time.time()
+            return context
+        
+        # No AGENTS.md found - fall back to automatic project scanning
         # Detect project type
         context.project_type = self._detect_project_type(root)
         
@@ -219,21 +260,21 @@ class ContextCollector:
     def _get_file_icon(self, filename: str) -> str:
         """Get appropriate icon for file type."""
         icons = {
-            ".py": "🐍",
-            ".js": "📜",
-            ".ts": "📘",
-            ".json": "📋",
-            ".md": "📝",
-            ".toml": "⚙️",
-            ".yaml": "⚙️",
-            ".yml": "⚙️",
-            ".txt": "📄",
-            ".rs": "🦀",
-            ".go": "🔵",
-            ".java": "☕",
+            ".py": "[py]",
+            ".js": "[js]",
+            ".ts": "[ts]",
+            ".json": "[json]",
+            ".md": "[md]",
+            ".toml": "[toml]",
+            ".yaml": "[yaml]",
+            ".yml": "[yml]",
+            ".txt": "[txt]",
+            ".rs": "[rs]",
+            ".go": "[go]",
+            ".java": "[java]",
         }
         ext = Path(filename).suffix
-        return icons.get(ext, "📄")
+        return icons.get(ext, "[file]")
     
     def _find_python_modules(self, root: Path) -> List[str]:
         """Find Python module structure."""
@@ -344,13 +385,30 @@ class ContextCollector:
     def build_system_context(self, root_path: Optional[Path] = None) -> str:
         """Build a system context string for the AI.
         
-        This creates a comprehensive context that can be added to the system prompt.
+        Priority:
+        1. If AGENTS.md exists, use its content (Codex-style)
+        2. Otherwise, build comprehensive context from project scanning
         
         Returns:
             Formatted context string
         """
         context = self.collect(root_path)
         
+        # If AGENTS.md is found, use it as the primary context (Codex-style)
+        if context.agents_md_found:
+            lines = [
+                "# 项目上下文 (AGENTS.md)",
+                "",
+                f"项目根目录: {context.root_path}",
+                "",
+                "## AGENTS.md",
+                "",
+                context.agents_md_content,
+                "",
+            ]
+            return "\n".join(lines)
+        
+        # No AGENTS.md - fall back to automatic project scanning
         lines = [
             "# 项目上下文",
             "",
@@ -417,14 +475,22 @@ class ContextCollector:
         """Display the collected context in the console."""
         context = self.collect(root_path)
         
-        self.console.print(Panel(
-            context.summary,
-            title=f"[bold blue]📂 项目信息: {context.project_name}[/bold blue]",
-            border_style="blue"
-        ))
-        
-        self.console.print("\n[dim]目录结构:[/dim]")
-        self.console.print(context.directory_tree)
+        if context.agents_md_found:
+            self.console.print(Panel(
+                f"[bold]{context.root_path.name}[/bold]\n"
+                f"[dim]AGENTS.md found - Project context loaded from AGENTS.md[/dim]",
+                title="[bold blue][Project] 项目信息[/bold blue]",
+                border_style="blue"
+            ))
+        else:
+            self.console.print(Panel(
+                context.summary,
+                title=f"[bold blue][Project] 项目信息: {context.project_name}[/bold blue]",
+                border_style="blue"
+            ))
+            
+            self.console.print("\n[dim]目录结构:[/dim]")
+            self.console.print(context.directory_tree)
 
 
 # Global instance

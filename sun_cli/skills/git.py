@@ -85,7 +85,7 @@ The workflow handles all steps automatically with user confirmation.
         if status.unstaged or status.untracked:
             self.context.console.print("[dim]正在暂存本地更改...[/dim]")
             self.git.stage_all()
-            self.context.console.print("[green]✓ 已暂存所有更改[/green]")
+            self.context.console.print("[green][OK] 已暂存所有更改[/green]")
         
         # 第二步：拉取远程代码
         success, message = self.git.pull(rebase=True)
