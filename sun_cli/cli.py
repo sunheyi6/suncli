@@ -445,11 +445,10 @@ def _show_slash_commands() -> None:
     
     table = Table(show_header=True, header_style="bold magenta", border_style="cyan")
     table.add_column("命令", style="cyan", width=20)
-    table.add_column("中文说明", style="green", width=35)
-    table.add_column("English", style="dim", width=35)
+    table.add_column("说明", style="green", width=70)
     
     for cmd, cn_desc, en_desc in SLASH_COMMANDS:
-        table.add_row(cmd, cn_desc, en_desc)
+        table.add_row(cmd, cn_desc)
     
     console.print(Panel(
         table,
@@ -860,10 +859,10 @@ async def _chat_async() -> None:
     # Welcome message
     prompt_info = get_prompt_info()
     console.print(Panel.fit(
-        f"[bold blue]Welcome to Sun CLI[/bold blue]\n"
-        f"[dim]Current:[/dim] {prompt_info}\n"
-        f"Model: [cyan]{cfg.model}[/cyan]\n"
-        f"Type [yellow]/help[/yellow] for commands | [yellow]?[/yellow] for quick hints | [yellow]/[/yellow] for slash commands | [yellow]exit[/yellow] to quit",
+        f"[bold blue]欢迎使用 Sun CLI[/bold blue]\n"
+        f"[dim]当前目录:[/dim] {prompt_info}\n"
+        f"当前模型: [cyan]{cfg.model}[/cyan]\n"
+        f"输入 [yellow]/help[/yellow] 查看命令 | 输入 [yellow]?[/yellow] 查看快捷提示 | 输入 [yellow]/[/yellow] 查看斜杠命令 | 输入 [yellow]exit[/yellow] 退出",
         title=f"Sun CLI v{__version__}"
     ))
     
@@ -897,7 +896,7 @@ async def _chat_async() -> None:
                 
                 # Handle exit commands
                 if user_input.lower() in ["exit", "quit", "/quit", "/exit"]:
-                    console.print("[dim]Goodbye![/dim]")
+                    console.print("[dim]再见！[/dim]")
                     break
                 
                 # Handle shell commands (start with !)
@@ -936,7 +935,7 @@ async def _chat_async() -> None:
                         session = ChatSession(console)
                         skill_context = SkillContext(console=console, config=cfg, chat_session=session)
                         skill_manager.initialize(skill_context)
-                        console.print("[dim]Started a new conversation.[/dim]")
+                        console.print("[dim]已开始新对话。[/dim]")
                     elif user_input == "/config":
                         console.print(Panel.fit(
                             f"[bold]Current Configuration[/bold]\n\n"
@@ -958,25 +957,25 @@ async def _chat_async() -> None:
                         awaiting_plan_modify = False
                         if session.is_in_plan_mode():
                             if session.approve_plan():
-                                console.print("[green]Plan approved! Executing...[/green]")
+                                console.print("[green]计划已批准，开始执行...[/green]")
                             else:
-                                console.print("[yellow]No plan to approve.[/yellow]")
+                                console.print("[yellow]当前没有可批准的计划。[/yellow]")
                         else:
-                            console.print("[yellow]Not in plan mode. Use /plan to start.[/yellow]")
+                            console.print("[yellow]当前不在计划模式。请先使用 /plan 开始。[/yellow]")
                     elif user_input == "/modify":
                         if session.is_in_plan_mode():
                             console.print("[cyan]Describe the changes you want to make to the plan:[/cyan]")
                             awaiting_plan_modify = True
                             awaiting_plan_input = False
                         else:
-                            console.print("[yellow]Not in plan mode. Use /plan to start.[/yellow]")
+                            console.print("[yellow]当前不在计划模式。请先使用 /plan 开始。[/yellow]")
                     elif user_input == "/cancel":
                         awaiting_plan_input = False
                         awaiting_plan_modify = False
                         if session.is_in_plan_mode():
                             session.cancel_plan_mode()
                         else:
-                            console.print("[yellow]Not in plan mode.[/yellow]")
+                            console.print("[yellow]当前不在计划模式。[/yellow]")
                     elif user_input == "/tasks":
                         console.print(Panel(
                             session.list_tasks_text(),
@@ -992,7 +991,7 @@ async def _chat_async() -> None:
                         except ValueError as e:
                             console.print(f"[red]{e}[/red]")
                     else:
-                        console.print(f"[red]Unknown command:[/red] {user_input}")
+                        console.print(f"[red]未知命令:[/red] {user_input}")
                     continue
                 
                 # Send message to AI
@@ -1032,63 +1031,63 @@ async def _handle_message(session: ChatSession, message: str) -> None:
 
 def _show_help(skill_manager) -> None:
     """Show help for chat commands."""
-    help_text = f"""[bold]Built-in Commands:[/bold]
-  [yellow]exit[/yellow], [yellow]quit[/yellow]  - Exit Sun CLI
-  [yellow]/help[/yellow]        - Show this help message
-  [yellow]/m[/yellow]           - Show model-related commands
-  [yellow]/clear[/yellow]       - Clear conversation history
-  [yellow]/new[/yellow]         - Start a new conversation
-  [yellow]/config[/yellow]      - Show current configuration
-  [yellow]/tasks[/yellow]       - Show persisted task board (.tasks)
-  [yellow]/task <id> <status>[/yellow] - Update task status (pending/in_progress/completed)
+    help_text = f"""[bold]内置命令:[/bold]
+  [yellow]exit[/yellow], [yellow]quit[/yellow]  - 退出 Sun CLI
+  [yellow]/help[/yellow]        - 显示帮助信息
+  [yellow]/m[/yellow]           - 显示模型相关命令
+  [yellow]/clear[/yellow]       - 清除对话历史
+  [yellow]/new[/yellow]         - 开始新对话
+  [yellow]/config[/yellow]      - 显示当前配置
+  [yellow]/tasks[/yellow]       - 显示持久化任务板（.tasks）
+  [yellow]/task <id> <status>[/yellow] - 更新任务状态（pending/in_progress/completed）
 
 [bold]快捷提示:[/bold]
   [yellow]?[/yellow]             - 显示快捷命令提示
   [yellow]/[/yellow]             - 显示所有斜杠命令列表
 
-[bold]Configuration:[/bold]
-  Configure API settings:
-    [cyan]suncli config --api-key <key>[/cyan]    - Set API key
-    [cyan]suncli config --base-url <url>[/cyan]    - Set API base URL
-    [cyan]suncli config --model <model>[/cyan]      - Set model
-    [cyan]suncli config --show[/cyan]              - Show current config
+[bold]配置命令:[/bold]
+  配置 API 参数:
+    [cyan]suncli config --api-key <key>[/cyan]    - 设置 API Key
+    [cyan]suncli config --base-url <url>[/cyan]    - 设置 API 基础地址
+    [cyan]suncli config --model <model>[/cyan]      - 设置默认模型
+    [cyan]suncli config --show[/cyan]              - 显示当前配置
 
-[bold]Model Presets:[/bold]
-  Manage model presets:
-    [cyan]suncli models --list[/cyan]               - List all available model presets
-    [cyan]suncli models --provider <name>[/cyan]      - Filter by provider
-    [cyan]suncli models --set <preset>[/cyan]        - Set model by preset name or ID
+[bold]模型预设:[/bold]
+  管理模型预设:
+    [cyan]suncli models --list[/cyan]               - 列出所有可用模型预设
+    [cyan]suncli models --provider <name>[/cyan]      - 按提供商筛选
+    [cyan]suncli models --set <preset>[/cyan]        - 按预设名或模型 ID 设置
 
-  Available providers: {', '.join(get_provider_names())}
+  可用提供商: {', '.join(get_provider_names())}
 
-  Example:
+  示例:
     [dim]suncli models --set "GPT-4o"[/dim]
     [dim]suncli models --set "moonshot-v1-128k"[/dim]
 
 {skill_manager.get_help_text()}
 
-[bold]Shell Commands:[/bold]
-  [yellow]![command][/yellow]     - Execute shell command locally
-  Examples:
-    [dim]!dir[/dim]          - List files (Windows)
-    [dim]!ls -la[/dim]       - List files (Linux/Mac)
-    [dim]!pwd[/dim]          - Show current directory
-    [dim]!cd ..[/dim]        - Change directory
+[bold]Shell 命令:[/bold]
+  [yellow]![command][/yellow]     - 在本地执行 shell 命令
+  示例:
+    [dim]!dir[/dim]          - 列出文件（Windows）
+    [dim]!ls -la[/dim]       - 列出文件（Linux/Mac）
+    [dim]!pwd[/dim]          - 显示当前目录
+    [dim]!cd ..[/dim]        - 切换目录
 
-[bold]Prompt Management:[/bold]
-  [dim]Edit prompt files to customize AI behavior:[/dim]
-    [cyan]suncli prompt --list[/cyan]        - List all prompts
-    [cyan]suncli prompt --edit system[/cyan]  - Edit system prompt
-    [cyan]suncli prompt --edit identity[/cyan]- Edit AI identity
-    [cyan]suncli prompt --edit user[/cyan]   - Edit user context
+[bold]提示词管理:[/bold]
+  [dim]编辑提示词文件以定制 AI 行为:[/dim]
+    [cyan]suncli prompt --list[/cyan]        - 列出全部提示词
+    [cyan]suncli prompt --edit system[/cyan]  - 编辑 system 提示词
+    [cyan]suncli prompt --edit identity[/cyan]- 编辑 identity 提示词
+    [cyan]suncli prompt --edit user[/cyan]   - 编辑 user 提示词
 
-[bold]Tips:[/bold]
-  - Type any message without prefix to chat with AI
-  - Use [cyan]Ctrl+C[/cyan] to interrupt response generation
-  - Conversation history is maintained until you exit
-  - Type [yellow]?[/yellow] for quick command hints, [yellow]/[/yellow] for slash commands
+[bold]使用提示:[/bold]
+  - 直接输入文本即可与 AI 对话（无需前缀）
+  - 使用 [cyan]Ctrl+C[/cyan] 可中断回答生成
+  - 对话历史会持续保留，直到你退出
+  - 输入 [yellow]?[/yellow] 查看快捷提示，输入 [yellow]/[/yellow] 查看斜杠命令
 """
-    console.print(Panel(help_text, title="Help", border_style="blue"))
+    console.print(Panel(help_text, title="帮助", border_style="blue"))
 
 
 def _show_model_commands() -> None:
@@ -1096,44 +1095,37 @@ def _show_model_commands() -> None:
     from rich.table import Table
     
     table = Table(show_header=True, header_style="bold magenta", border_style="cyan")
-    table.add_column("Command", style="cyan", width=35)
-    table.add_column("Description (CN)", style="green", width=40)
-    table.add_column("Description (EN)", style="dim", width=40)
+    table.add_column("命令", style="cyan", width=35)
+    table.add_column("说明", style="green", width=60)
     
     table.add_row(
         "suncli models --list",
-        "列出所有可用的模型预设",
-        "List all available model presets"
+        "列出所有可用的模型预设"
     )
     table.add_row(
         "suncli models --provider <name>",
-        "按提供商筛选模型",
-        "Filter models by provider"
+        "按提供商筛选模型"
     )
     table.add_row(
         "suncli models --set <preset>",
-        "设置模型（支持预设名称或模型ID）",
-        "Set model by preset name or ID"
+        "设置模型（支持预设名称或模型ID）"
     )
     table.add_row(
         "suncli config --model <model_id>",
-        "直接设置模型ID",
-        "Set model ID directly"
+        "直接设置模型ID"
     )
     table.add_row(
         "suncli config --base-url <url>",
-        "设置API基础URL",
-        "Set API base URL"
+        "设置 API 基础 URL"
     )
     table.add_row(
         "suncli config --show",
-        "显示当前配置",
-        "Show current configuration"
+        "显示当前配置"
     )
     
     console.print(Panel(
         table,
-        title="[bold]Model-Related Commands[/bold]",
+        title="[bold]模型相关命令[/bold]",
         border_style="blue"
     ))
     

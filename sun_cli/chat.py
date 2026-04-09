@@ -103,7 +103,7 @@ class ChatSession:
                 self.console.print(Panel(
                     f"[bold]{context_summary.root_path.name}[/bold]\n"
                     f"[dim]{context_summary.root_path}[/dim]\n"
-                    f"[green][OK] AGENTS.md found - Project context loaded[/green]",
+                    f"[green][OK] 已发现 AGENTS.md，项目上下文已加载[/green]",
                     title="[blue][Project] 已加载项目信息[/blue]",
                     border_style="blue"
                 ))

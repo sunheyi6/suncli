@@ -478,7 +478,7 @@ class ContextCollector:
         if context.agents_md_found:
             self.console.print(Panel(
                 f"[bold]{context.root_path.name}[/bold]\n"
-                f"[dim]AGENTS.md found - Project context loaded from AGENTS.md[/dim]",
+                f"[dim]已发现 AGENTS.md，已从 AGENTS.md 加载项目上下文[/dim]",
                 title="[bold blue][Project] 项目信息[/bold blue]",
                 border_style="blue"
             ))
