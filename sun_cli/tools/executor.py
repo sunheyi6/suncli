@@ -10,6 +10,7 @@ from . import read_file, write_file, edit_file, run_bash
 @dataclass
 class ToolCall:
     """Represents a tool call."""
+    id: str
     name: str
     args: Dict[str, Any]
     
@@ -46,21 +47,24 @@ class ToolCallParser:
             List of ToolCall objects
         """
         calls = []
+        call_index = 0
         
         # Try XML format first
         for match in cls.XML_PATTERN.finditer(text):
+            call_index += 1
             name = match.group(1)
             args_text = match.group(2)
             args = cls._parse_args(args_text)
-            calls.append(ToolCall(name=name, args=args))
+            calls.append(ToolCall(id=f"toolu_{call_index}", name=name, args=args))
         
         # Try JSON format
         for match in cls.JSON_PATTERN.finditer(text):
+            call_index += 1
             name = match.group(1)
             args_text = match.group(2)
             try:
                 args = json.loads(args_text)
-                calls.append(ToolCall(name=name, args=args))
+                calls.append(ToolCall(id=f"toolu_{call_index}", name=name, args=args))
             except json.JSONDecodeError:
                 continue
         

@@ -256,10 +256,15 @@ class ChatSession:
         Returns:
             Final assistant response
         """
+        state = {
+            "turn_count": 0,
+            "transition_reason": None,
+        }
         iteration = 0
         
         while iteration < max_iterations:
             iteration += 1
+            state["turn_count"] = iteration
             self._maybe_compact_context()
             
             # Get AI response (without displaying for intermediate rounds)
@@ -274,6 +279,7 @@ class ChatSession:
                 self._try_capture_plan_from_response(full_content)
                 self.conversation.add_message(MessageRole.ASSISTANT, full_content)
                 self.console.print(Markdown(full_content))
+                state["transition_reason"] = None
                 return full_content
             
             # There are tool calls - execute them silently
@@ -283,9 +289,15 @@ class ChatSession:
             # Add assistant message with tool calls to conversation
             self.conversation.add_message(MessageRole.ASSISTANT, full_content)
             
-            # Add tool results to conversation
-            tool_results_message = self._format_tool_results(tool_calls, tool_results)
-            self.conversation.add_message(MessageRole.SYSTEM, tool_results_message)
+            # Add structured tool results to conversation as next-turn input.
+            # This keeps the core agent loop aligned with s01:
+            # assistant(tool_use) -> tool_result(with tool_use_id) -> next turn
+            tool_result_blocks = self._build_tool_result_blocks(tool_calls, tool_results)
+            self.conversation.add_message(
+                MessageRole.USER,
+                json.dumps(tool_result_blocks, ensure_ascii=False)
+            )
+            state["transition_reason"] = "tool_result"
         
         # Max iterations reached - get final response with display
         self.console.print(f"[yellow]已达到最大工具调用次数 ({max_iterations})，生成最终回复...[/yellow]")
@@ -433,6 +445,19 @@ class ChatSession:
         parts.append("\nBased on the above tool results, please continue with your task.")
         
         return "\n".join(parts)
+
+    def _build_tool_result_blocks(self, tool_calls: list[ToolCall], results: list[str]) -> list[dict]:
+        """Build structured tool_result blocks with tool_use_id for next turn input."""
+        blocks = []
+        for call, result in zip(tool_calls, results):
+            blocks.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": call.id,
+                    "content": result,
+                }
+            )
+        return blocks
     
     def _show_api_error(self) -> None:
         """Show API configuration error with recommendations."""
