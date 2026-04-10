@@ -1,10 +1,10 @@
-"""Tool calling parser for Sun CLI."""
+"""Tool calling parser and executor for Sun CLI."""
 
 import json
 import re
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 from dataclasses import dataclass
-from . import read_file, write_file, edit_file, run_bash
+from . import read_file, write_file, edit_file, run_bash, ToolResult
 
 
 @dataclass
@@ -100,17 +100,35 @@ class ToolCallParser:
 
 
 class ToolExecutor:
-    """Execute tool calls."""
+    """Execute tool calls with extensible handler registry."""
     
-    TOOL_MAP = {
+    # Native tools (built-in)
+    NATIVE_TOOLS: dict[str, Callable] = {
         "read": read_file,
         "write": write_file,
         "edit": edit_file,
         "bash": run_bash,
     }
     
-    @classmethod
-    def execute(cls, call: ToolCall) -> str:
+    def __init__(self):
+        """Initialize executor with empty extension handlers."""
+        self._handlers: dict[str, Callable] = {}
+        self._context: Any = None
+        
+    def set_context(self, context: Any):
+        """Set execution context (chat session, client, config, etc.)."""
+        self._context = context
+        
+    def register_handler(self, name: str, handler: Callable):
+        """Register a custom tool handler.
+        
+        Args:
+            name: Tool name
+            handler: Function to handle the tool
+        """
+        self._handlers[name] = handler
+        
+    def execute(self, call: ToolCall) -> str:
         """Execute a tool call.
         
         Args:
@@ -119,10 +137,55 @@ class ToolExecutor:
         Returns:
             Result string
         """
-        tool_func = cls.TOOL_MAP.get(call.name)
+        # Check custom handlers first
+        if call.name in self._handlers:
+            try:
+                result = self._handlers[call.name](**call.args)
+                if isinstance(result, ToolResult):
+                    return result.content if result.success else f"Error: {result.error}"
+                return str(result)
+            except Exception as e:
+                return f"Error executing {call.name}: {str(e)}"
+        
+        # Check native tools
+        if call.name in self.NATIVE_TOOLS:
+            try:
+                result = self.NATIVE_TOOLS[call.name](**call.args)
+                if result.success:
+                    return result.content
+                else:
+                    return f"Error: {result.error}"
+            except Exception as e:
+                return f"Error executing tool: {str(e)}"
+        
+        # Unknown tool
+        return f"Error: Unknown tool '{call.name}'"
+    
+    def execute_all(self, calls: list[ToolCall]) -> list[str]:
+        """Execute multiple tool calls.
+        
+        Args:
+            calls: List of ToolCall objects
+            
+        Returns:
+            List of result strings
+        """
+        return [self.execute(call) for call in calls]
+    
+    @classmethod
+    def execute_native(cls, call: ToolCall) -> str:
+        """Execute native tool without instance (for simple cases).
+        
+        Args:
+            call: ToolCall to execute
+            
+        Returns:
+            Result string
+        """
+        tool_func = cls.NATIVE_TOOLS.get(call.name)
         
         if not tool_func:
-            return f"Error: Unknown tool '{call.name}'. Available tools: {list(cls.TOOL_MAP.keys())}"
+            return f"Error: Unknown tool '{call.name}'. Available: {list(cls.NATIVE_TOOLS.keys())}"
         
         try:
             result = tool_func(**call.args)
@@ -133,15 +196,3 @@ class ToolExecutor:
                 return f"Error: {result.error}"
         except Exception as e:
             return f"Error executing tool: {str(e)}"
-    
-    @classmethod
-    def execute_all(cls, calls: list[ToolCall]) -> list[str]:
-        """Execute multiple tool calls.
-        
-        Args:
-            calls: List of ToolCall objects
-            
-        Returns:
-            List of result strings
-        """
-        return [cls.execute(call) for call in calls]

@@ -113,6 +113,7 @@ QUICK_HINTS = {
         ("/help", "显示完整帮助"),
         ("/m", "模型命令"),
         ("/clear", "清除历史"),
+        ("/history", "输入历史"),
         ("/new", "新对话"),
         ("/plan", "计划模式"),
         ("/tasks", "任务板"),
@@ -126,6 +127,8 @@ SLASH_COMMANDS = [
     ("/clear", "清除当前对话历史", "清除当前对话历史"),
     ("/new", "开始一个新对话", "开始一个新对话"),
     ("/config", "显示当前配置信息", "显示当前配置信息"),
+    ("/history", "显示输入历史", "显示最近的输入历史"),
+    ("/history clear", "清除输入历史", "清除所有输入历史"),
     ("/plan", "进入计划模式", "进入计划模式"),
     ("/approve", "批准当前计划", "批准当前计划"),
     ("/modify", "修改当前计划", "修改当前计划"),
@@ -497,14 +500,23 @@ def _get_bottom_toolbar_text(text: str) -> str:
 
 
 async def _get_input_with_hints(prompt_info: str) -> str:
-    """Get input with inline slash command menu (embedded below input line)."""
+    """Get input with inline slash command menu and history navigation."""
     # Check if we're in an interactive terminal
     if not _is_interactive():
         return _get_input_simple(prompt_info)
     
     try:
         from .input_hints import get_input_with_inline_menu
-        return await get_input_with_inline_menu(get_prompt_plain_text(), SLASH_COMMANDS)
+        from .history import get_history
+        
+        # Get history instance for up/down navigation
+        history = get_history().get_history()
+        
+        return await get_input_with_inline_menu(
+            get_prompt_plain_text(), 
+            SLASH_COMMANDS,
+            history=history,
+        )
     except Exception as e:
         # Fall back to simple input
         return _get_input_simple(prompt_info)
@@ -982,6 +994,35 @@ async def _chat_async() -> None:
                             title="Task Board (.tasks)",
                             border_style="cyan"
                         ))
+                    elif user_input == "/history":
+                        from .history import get_history
+                        history = get_history()
+                        recent = history.get_recent(limit=20)
+                        
+                        if not recent:
+                            console.print("[dim]没有输入历史[/dim]")
+                        else:
+                            from rich.table import Table
+                            table = Table(show_header=True, header_style="bold", border_style="cyan")
+                            table.add_column("#", style="dim", width=4)
+                            table.add_column("输入", style="green")
+                            
+                            for i, entry in enumerate(recent, 1):
+                                # Truncate long entries
+                                display = entry[:80] + "..." if len(entry) > 80 else entry
+                                table.add_row(str(i), display)
+                            
+                            console.print(Panel(
+                                table,
+                                title="Input History",
+                                border_style="blue"
+                            ))
+                            console.print("[dim]按 ↑/↓ 键在历史中导航 | /history clear 清除历史[/dim]")
+                    elif user_input == "/history clear":
+                        from .history import get_history
+                        history = get_history()
+                        history.clear()
+                        console.print("[green]输入历史已清除[/green]")
                     elif len(parts) == 3 and parts[0] == "/task":
                         try:
                             task_id = int(parts[1])

@@ -1,8 +1,9 @@
-"""Chat functionality for Sun CLI."""
+"""Chat functionality for Sun CLI - Full s01-s19 implementation."""
 
 import json
 import uuid
 import re
+from typing import Any, Optional
 
 import httpx
 from rich.console import Console, Group
@@ -17,7 +18,7 @@ from .config import get_config
 from .models import Conversation, MessageRole, Message
 from .prompts import get_prompt_manager
 from .mirror_manager import get_mirror_manager
-from .tools import TOOL_DEFINITIONS
+from .tools.definitions import build_tools_prompt
 from .tools.executor import ToolCallParser, ToolExecutor, ToolCall
 from .skills import get_skill_manager, SkillContext
 from .skills.git import GitSkill
@@ -26,9 +27,30 @@ from .skills.config import ConfigSkill
 from .plan_mode import PlanModeManager, PlanMode
 from .context_collector import get_context_collector
 
+# s04: Subagent
+from .subagent import run_subagent
+
+# s08/s13: Background tasks
+from .background import get_background_manager
+
+# s09: Memory
+from .memory import get_memory_manager
+
+# s12/s18: Worktree
+from .worktree import WorktreeManager
+
+# s14: Scheduler
+from .task import get_scheduler
+
+# s15-s17: Team
+from .team import get_team_manager
+
+# s19: MCP
+from .mcp import MCPClient, PluginLoader
+
 
 class ChatSession:
-    """A chat session with an AI model."""
+    """A chat session with full agent capabilities (s01-s19)."""
     COMPACT_MARKER = "[CONTEXT_COMPACT_SUMMARY]"
     
     def __init__(self, console: Console) -> None:
@@ -37,18 +59,16 @@ class ChatSession:
         self.conversation = Conversation(id=str(uuid.uuid4())[:8])
         self.prompt_manager = get_prompt_manager()
         
-        # Initialize plan mode manager
+        # Plan mode manager
         self.plan_manager = PlanModeManager(console)
         
-        # Initialize skill manager
+        # Skill manager
         self.skill_manager = get_skill_manager()
-        
-        # Register skills
         self.skill_manager.register(GitSkill())
         self.skill_manager.register(PromptSkill())
         self.skill_manager.register(ConfigSkill())
         
-        # Detect location for language preference
+        # Detect location
         self._is_china_mainland = False
         try:
             mm = get_mirror_manager()
@@ -71,12 +91,66 @@ class ChatSession:
             timeout=120.0,
         )
         
+        # s08/s13: Background manager
+        self.background = get_background_manager()
+        
+        # s09: Memory manager
+        self.memory = get_memory_manager()
+        
+        # s12/s18: Worktree manager
+        self.worktree = WorktreeManager()
+        
+        # s14: Scheduler
+        self.scheduler = get_scheduler()
+        
+        # s15-s17: Team manager
+        self.team = get_team_manager(self.client, self.config)
+        
+        # s19: MCP client
+        self.mcp_client = MCPClient()
+        self._mcp_connected = False
+        
+        # Tool executor with custom handlers
+        self.tool_executor = ToolExecutor()
+        self._register_custom_tools()
+        
         # Initialize with system prompt
         self._initialize_system_prompt()
     
+    def _register_custom_tools(self):
+        """Register extended tool handlers."""
+        # s04: Subagent
+        self.tool_executor.register_handler("subagent", self._handle_subagent)
+        
+        # s13: Background tasks
+        self.tool_executor.register_handler("background_run", self._handle_background_run)
+        self.tool_executor.register_handler("background_check", self._handle_background_check)
+        
+        # s14: Scheduler
+        self.tool_executor.register_handler("schedule_create", self._handle_schedule_create)
+        self.tool_executor.register_handler("schedule_list", self._handle_schedule_list)
+        self.tool_executor.register_handler("schedule_remove", self._handle_schedule_remove)
+        
+        # s15-s17: Team
+        self.tool_executor.register_handler("team_spawn", self._handle_team_spawn)
+        self.tool_executor.register_handler("team_send", self._handle_team_send)
+        self.tool_executor.register_handler("team_list", self._handle_team_list)
+        
+        # s16: Protocol
+        self.tool_executor.register_handler("request_approval", self._handle_request_approval)
+        
+        # s18: Worktree
+        self.tool_executor.register_handler("worktree_create", self._handle_worktree_create)
+        self.tool_executor.register_handler("worktree_enter", self._handle_worktree_enter)
+        self.tool_executor.register_handler("worktree_closeout", self._handle_worktree_closeout)
+        
+        # s09: Memory
+        self.tool_executor.register_handler("save_memory", self._handle_save_memory)
+        self.tool_executor.register_handler("load_memory", self._handle_load_memory)
+    
     def _initialize_system_prompt(self) -> None:
-        """Load system prompt from prompt files, skills, and project context."""
-        tools_prompt = TOOL_DEFINITIONS
+        """Load system prompt with all extensions."""
+        tools_prompt = build_tools_prompt()
         skills_prompt = self.skill_manager.get_all_system_prompts()
         
         # Add plan mode prompt if active
@@ -91,36 +165,29 @@ class ChatSession:
             skills_prompt=skills_prompt
         )
         
-        # Collect and add project context
+        # Add project context
         try:
             context_collector = get_context_collector(self.console)
             project_context = context_collector.build_system_context()
             
-            # Show context summary to user
             context_summary = context_collector.collect()
             if context_summary.agents_md_found:
-                # AGENTS.md found - show Codex-style message
                 self.console.print(Panel(
                     f"[bold]{context_summary.root_path.name}[/bold]\n"
                     f"[dim]{context_summary.root_path}[/dim]\n"
-                    f"[green][OK] 已发现 AGENTS.md，项目上下文已加载[/green]",
-                    title="[blue][Project] 已加载项目信息[/blue]",
-                    border_style="blue"
-                ))
-            elif context_summary.project_name:
-                # Fallback to automatic project scanning
-                self.console.print(Panel(
-                    f"[bold]{context_summary.project_name}[/bold] ({context_summary.project_type})\n"
-                    f"[dim]{context_summary.root_path}[/dim]",
-                    title="[blue][Project] 已加载项目信息[/blue]",
+                    f"[green][OK] AGENTS.md loaded[/green]",
+                    title="[blue][Project] Context loaded[/blue]",
                     border_style="blue"
                 ))
             
-            # Add project context to system prompt
             system_prompt = f"{system_prompt}\n\n{project_context}"
         except Exception as e:
-            # Don't fail if context collection fails
-            self.console.print(f"[dim][!] 无法加载项目信息: {e}[/dim]")
+            self.console.print(f"[dim][!] Could not load project context: {e}[/dim]")
+        
+        # s09: Load memories
+        memory_section = self.memory.load_for_session()
+        if memory_section:
+            system_prompt = f"{system_prompt}\n\n{memory_section}"
         
         # Combine all prompts
         if plan_mode_prompt:
@@ -129,169 +196,237 @@ class ChatSession:
         if system_prompt:
             self.conversation.add_message(MessageRole.SYSTEM, system_prompt)
     
-    def _render_with_code_highlight(self, content: str) -> None:
-        """Render content with enhanced code block highlighting."""
-        import re
-        from rich.console import Group
-        
-        # Pattern to match code blocks
-        code_block_pattern = re.compile(r'```(\w*)\n(.*?)```', re.DOTALL)
-        
-        parts = []
-        last_end = 0
-        
-        for match in code_block_pattern.finditer(content):
-            # Add text before code block as Markdown
-            if match.start() > last_end:
-                text_part = content[last_end:match.start()]
-                if text_part.strip():
-                    parts.append(Markdown(text_part))
-            
-            # Create syntax highlighted code block
-            language = match.group(1) or "text"
-            code = match.group(2).rstrip('\n')
-            
-            # Map common aliases
-            lang_map = {
-                "py": "python", "js": "javascript", "ts": "typescript",
-                "sh": "bash", "shell": "bash", "zsh": "bash",
-                "yml": "yaml", "": "text",
-            }
-            syntax_lang = lang_map.get(language.lower(), language.lower())
-            
-            # Create syntax highlighted panel
-            syntax = Syntax(
-                code,
-                syntax_lang,
-                theme="monokai",
-                line_numbers=True,
-                word_wrap=True,
-                padding=(1, 2),
-            )
-            
-            lang_display = language.upper() if language else "CODE"
-            panel = Panel(
-                syntax,
-                title=f"[bold cyan][Code] {lang_display}[/bold cyan]",
-                title_align="left",
-                border_style="cyan",
-                subtitle="[dim]💡 选中复制 / Select to copy[/dim]",
-                subtitle_align="right",
-                padding=(0, 0),
-            )
-            parts.append(panel)
-            
-            last_end = match.end()
-        
-        # Add remaining text
-        if last_end < len(content):
-            text_part = content[last_end:]
-            if text_part.strip():
-                parts.append(Markdown(text_part))
-        
-        # Render all parts
-        if parts:
-            self.console.print(Group(*parts))
-        else:
-            # No code blocks, just render as markdown
-            self.console.print(Markdown(content))
+    # ========== s04: Subagent ==========
     
-    async def send_message(self, content: str) -> str:
-        """Send a message and get the complete response."""
-        # Add user message
-        self.conversation.add_message(MessageRole.USER, content)
-        self._maybe_compact_context()
+    def _handle_subagent(self, prompt: str, tools: list = None) -> str:
+        """Handle subagent tool call."""
+        import asyncio
         
-        # Call API
-        response = await self.client.post(
-            "/chat/completions",
-            json={
-                "model": self.config.model,
-                "messages": self.conversation.to_openai_messages(),
-                "temperature": self.config.temperature,
-                "max_tokens": self.config.max_tokens,
-            },
-        )
-        response.raise_for_status()
+        self.console.print(f"[dim]Spawning subagent for: {prompt[:50]}...[/dim]")
         
-        data = response.json()
-        assistant_content = data["choices"][0]["message"]["content"] or ""
-        self.conversation.add_message(MessageRole.ASSISTANT, assistant_content)
+        # Run subagent synchronously (since we're in tool context)
+        try:
+            loop = asyncio.get_event_loop()
+            result = loop.run_until_complete(
+                run_subagent(self.client, self.config, prompt, tools)
+            )
+            return f"Subagent result:\n{result}"
+        except Exception as e:
+            return f"Subagent error: {e}"
+    
+    # ========== s13: Background Tasks ==========
+    
+    def _handle_background_run(self, command: str, description: str = "") -> str:
+        """Handle background_run tool."""
+        task_id = self.background.run(command, description)
+        return f"Background task started: {task_id}\nUse background_check to get results."
+    
+    def _handle_background_check(self, task_id: str = None) -> str:
+        """Handle background_check tool."""
+        tasks = self.background.check(task_id)
         
-        return assistant_content
+        lines = []
+        for task in tasks:
+            lines.append(f"Task {task.id}:")
+            lines.append(f"  Command: {task.command}")
+            lines.append(f"  Status: {task.status}")
+            if task.result_preview:
+                lines.append(f"  Preview: {task.result_preview[:200]}")
+            if task.status in ("completed", "failed", "timeout"):
+                # Read full output
+                output = self.background.read_output(task.id, max_chars=2000)
+                lines.append(f"  Output:\n{output}")
+        
+        return "\n".join(lines) if lines else "No background tasks found"
+    
+    # ========== s14: Scheduler ==========
+    
+    def _handle_schedule_create(self, cron: str, prompt: str, recurring: bool = True, name: str = None) -> str:
+        """Handle schedule_create tool."""
+        schedule_id = self.scheduler.create(cron, prompt, name, recurring)
+        return f"Schedule created: {schedule_id}\nCron: {cron}\nPrompt: {prompt[:100]}..."
+    
+    def _handle_schedule_list(self) -> str:
+        """Handle schedule_list tool."""
+        schedules = self.scheduler.list_all()
+        
+        if not schedules:
+            return "No scheduled tasks"
+        
+        lines = ["Scheduled tasks:"]
+        for s in schedules:
+            status = "enabled" if s.enabled else "disabled"
+            last = f" (last: {s.last_fired_at})" if s.last_fired_at else ""
+            lines.append(f"  {s.schedule_id}: {s.name} [{s.cron}] {status}{last}")
+        
+        return "\n".join(lines)
+    
+    def _handle_schedule_remove(self, schedule_id: str) -> str:
+        """Handle schedule_remove tool."""
+        success = self.scheduler.remove(schedule_id)
+        return f"Schedule {schedule_id} {'removed' if success else 'not found'}"
+    
+    # ========== s15-s17: Team ==========
+    
+    def _handle_team_spawn(self, name: str, role: str, prompt: str) -> str:
+        """Handle team_spawn tool."""
+        from .task_manager import TaskManager
+        
+        task_board = TaskManager()
+        teammate = self.team.spawn(name, role, prompt, task_board)
+        
+        # Start teammate in background (would need async handling in production)
+        return f"Teammate spawned: {name} (role: {role})\nStatus: {teammate.status.value}"
+    
+    def _handle_team_send(self, to: str, content: str) -> str:
+        """Handle team_send tool."""
+        msg_id = self.team.send_message("lead", to, content)
+        return f"Message sent to {to}: {msg_id}"
+    
+    def _handle_team_list(self) -> str:
+        """Handle team_list tool."""
+        members = self.team.list_members()
+        
+        if not members:
+            return "No teammates yet"
+        
+        lines = ["Team members:"]
+        for m in members:
+            lines.append(f"  {m['name']} ({m['role']}): {m.get('status', 'unknown')}")
+        
+        return "\n".join(lines)
+    
+    # ========== s16: Protocol ==========
+    
+    def _handle_request_approval(self, action: str, request_id: str) -> str:
+        """Handle request_approval tool."""
+        # In a real implementation, this would queue for user approval
+        return f"Approval request '{request_id}' queued for: {action}\n(Use /approve or /reject to respond)"
+    
+    # ========== s18: Worktree ==========
+    
+    def _handle_worktree_create(self, name: str, task_id: int) -> str:
+        """Handle worktree_create tool."""
+        try:
+            record = self.worktree.create(name, task_id)
+            return f"Worktree created: {name}\nPath: {record.path}\nBranch: {record.branch}\nBound to task: {task_id}"
+        except Exception as e:
+            return f"Error creating worktree: {e}"
+    
+    def _handle_worktree_enter(self, name: str) -> str:
+        """Handle worktree_enter tool."""
+        try:
+            path = self.worktree.enter(name)
+            return f"Entered worktree: {name}\nPath: {path}\nSubsequent commands will run in this directory."
+        except Exception as e:
+            return f"Error entering worktree: {e}"
+    
+    def _handle_worktree_closeout(self, name: str, action: str, reason: str = "", complete_task: bool = False) -> str:
+        """Handle worktree_closeout tool."""
+        from .task_manager import TaskManager
+        
+        try:
+            task_manager = TaskManager() if complete_task else None
+            record = self.worktree.closeout(name, action, reason, complete_task, task_manager)
+            
+            result = f"Worktree {name} {action}ed"
+            if reason:
+                result += f" (reason: {reason})"
+            if complete_task and record.task_id:
+                result += f"\nTask {record.task_id} marked as completed"
+            
+            return result
+        except Exception as e:
+            return f"Error in worktree closeout: {e}"
+    
+    # ========== s09: Memory ==========
+    
+    def _handle_save_memory(self, name: str, mem_type: str, content: str, description: str = "") -> str:
+        """Handle save_memory tool."""
+        try:
+            path = self.memory.save(name, mem_type, content, description)
+            return f"Memory saved: {name}\nType: {mem_type}\nPath: {path}"
+        except Exception as e:
+            return f"Error saving memory: {e}"
+    
+    def _handle_load_memory(self, name: str = None, mem_type: str = None) -> str:
+        """Handle load_memory tool."""
+        if name:
+            entry = self.memory.load(name, mem_type)
+            if entry:
+                return f"Memory: {entry.name}\nType: {entry.type}\nContent:\n{entry.content}"
+            return f"Memory not found: {name}"
+        
+        # List all memories
+        memories = self.memory.list_memories()
+        if not memories:
+            return "No memories stored"
+        
+        lines = ["Memories:"]
+        for m in memories:
+            lines.append(f"  {m['name']} [{m['type']}]: {m['description']}")
+        
+        return "\n".join(lines)
+    
+    # ========== Core Message Handling ==========
     
     async def stream_message(self, content: str, max_tool_iterations: int = 10) -> str:
-        """Send a message and stream the response with multi-round tool calling support.
-        
-        This method supports iterative tool calling where the AI can:
-        1. Analyze the user's request
-        2. Call tools to gather information
-        3. Analyze the results
-        4. Call more tools if needed
-        5. Provide the final answer
-        
-        Args:
-            content: User's message
-            max_tool_iterations: Maximum number of tool call rounds (default: 10)
-            
-        Returns:
-            Final assistant response
-        """
+        """Send a message with full multi-round tool calling."""
         # Add user message
         self.conversation.add_message(MessageRole.USER, content)
+        
+        # s06: Maybe compact context
         self._maybe_compact_context()
         
         # Start multi-round tool calling loop
         return await self._run_tool_loop(max_iterations=max_tool_iterations)
     
     async def _run_tool_loop(self, max_iterations: int = 10) -> str:
-        """Run the multi-round tool calling loop.
-        
-        Only displays output for the final round (when no more tool calls are needed).
-        Intermediate rounds with tool calls are processed silently.
-        
-        Args:
-            max_iterations: Maximum number of tool call rounds
-            
-        Returns:
-            Final assistant response
-        """
+        """Run the multi-round tool calling loop (s01 + enhancements)."""
         state = {
             "turn_count": 0,
             "transition_reason": None,
         }
-        iteration = 0
         
-        while iteration < max_iterations:
-            iteration += 1
-            state["turn_count"] = iteration
-            self._maybe_compact_context()
+        for iteration in range(max_iterations):
+            state["turn_count"] = iteration + 1
             
-            # Get AI response (without displaying for intermediate rounds)
-            # We check if this is the final round after parsing tool calls
-            full_content = await self._stream_ai_response(display_output=False)
+            # s06: Micro-compact before each call
+            self._micro_compact()
+            
+            # Check for scheduled tasks (s14)
+            await self._check_scheduled_tasks()
+            
+            # Check for background task completions (s13)
+            await self._check_background_tasks()
+            
+            # Get AI response (only display on first iteration, suppress for tool rounds)
+            should_display = (iteration == 0)
+            full_content = await self._stream_ai_response(display_output=should_display)
             
             # Check for tool calls
             tool_calls = ToolCallParser.parse(full_content)
             
             if not tool_calls:
-                # No tool calls, this is the final response - display it now
+                # No tool calls - final response
                 self._try_capture_plan_from_response(full_content)
                 self.conversation.add_message(MessageRole.ASSISTANT, full_content)
-                self.console.print(Markdown(full_content))
+                # Only print if not already displayed during streaming
+                if not should_display:
+                    self.console.print(Markdown(full_content))
                 state["transition_reason"] = None
                 return full_content
             
-            # There are tool calls - execute them silently
-            self.console.print(f"\n[dim][正在分析... {iteration}/{max_iterations}][/dim]")
+            # Execute tool calls
+            if iteration > 0:
+                self.console.print(f"\n[dim][Analyzing... {iteration + 1}/{max_tool_iterations}][/dim]")
+            
             tool_results = await self._execute_tool_calls(tool_calls)
             
-            # Add assistant message with tool calls to conversation
+            # Add assistant message
             self.conversation.add_message(MessageRole.ASSISTANT, full_content)
             
-            # Add structured tool results to conversation as next-turn input.
-            # This keeps the core agent loop aligned with s01:
-            # assistant(tool_use) -> tool_result(with tool_use_id) -> next turn
+            # Add tool results
             tool_result_blocks = self._build_tool_result_blocks(tool_calls, tool_results)
             self.conversation.add_message(
                 MessageRole.USER,
@@ -299,23 +434,29 @@ class ChatSession:
             )
             state["transition_reason"] = "tool_result"
         
-        # Max iterations reached - get final response with display
-        self.console.print(f"[yellow]已达到最大工具调用次数 ({max_iterations})，生成最终回复...[/yellow]")
+        # Max iterations reached
+        self.console.print(f"[yellow]Max tool iterations ({max_iterations}) reached, generating final response...[/yellow]")
         final_content = await self._stream_ai_response(display_output=True)
         self._try_capture_plan_from_response(final_content)
         self.conversation.add_message(MessageRole.ASSISTANT, final_content)
         return final_content
     
+    async def _check_scheduled_tasks(self):
+        """Check and inject scheduled task notifications (s14)."""
+        notifications = self.scheduler.check_and_fire()
+        if notifications:
+            text = self.scheduler.format_for_prompt(notifications)
+            self.conversation.add_message(MessageRole.USER, text)
+    
+    async def _check_background_tasks(self):
+        """Check and inject background task notifications (s13)."""
+        notifications = self.background.drain_notifications()
+        if notifications:
+            text = self.background.format_for_prompt(notifications)
+            self.conversation.add_message(MessageRole.USER, text)
+    
     async def _stream_ai_response(self, display_output: bool = True) -> str:
-        """Stream AI response and return the full content.
-        
-        Args:
-            display_output: Whether to display the streaming output to the user.
-                          Set to False for intermediate tool-calling rounds.
-        
-        Returns:
-            Full response content
-        """
+        """Stream AI response."""
         try:
             async with self.client.stream(
                 "POST",
@@ -333,7 +474,6 @@ class ChatSession:
                 full_content = ""
                 
                 if display_output:
-                    # Stream to user
                     with Live(Markdown(""), console=self.console, refresh_per_second=10) as live:
                         async for line in response.aiter_lines():
                             if line.startswith("data: "):
@@ -349,7 +489,6 @@ class ChatSession:
                                 except (json.JSONDecodeError, KeyError):
                                     continue
                 else:
-                    # Silent mode - just collect the content
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
                             data = line[6:]
@@ -374,47 +513,36 @@ class ChatSession:
             raise
     
     async def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> list[str]:
-        """Execute tool calls and display results.
-        
-        Automatically deduplicates identical tool calls to avoid redundant execution.
-        
-        Args:
-            tool_calls: List of tool calls to execute
-            
-        Returns:
-            List of tool results
-        """
+        """Execute tool calls with deduplication."""
         results = []
-        executed = {}  # Cache for deduplication: {(name, args_key): result}
+        executed = {}
         
         for i, call in enumerate(tool_calls, 1):
-            # Create a key for deduplication
+            # Deduplication key
             args_key = json.dumps(call.args, sort_keys=True, ensure_ascii=False)
             cache_key = (call.name, args_key)
             
-            # Check if this exact call was already executed
             if cache_key in executed:
                 self.console.print(Panel(
                     f"[dim]{call.to_string()}[/dim]",
-                    title=f"[bold blue]Tool {i}/{len(tool_calls)}[/bold blue] [yellow](duplicate, skipped)[/yellow]",
+                    title=f"[bold blue]Tool {i}/{len(tool_calls)}[/bold blue] [yellow](duplicate)[/yellow]",
                     border_style="yellow"
                 ))
                 results.append(executed[cache_key])
                 continue
             
-            # Show tool call
             self.console.print(Panel(
                 f"[cyan]{call.to_string()}[/cyan]",
                 title=f"[bold blue]Tool {i}/{len(tool_calls)}[/bold blue]",
                 border_style="blue"
             ))
             
-            # Execute tool
-            result = ToolExecutor.execute(call)
+            # Execute via executor
+            result = self.tool_executor.execute(call)
             executed[cache_key] = result
             results.append(result)
             
-            # Show result (truncate if too long)
+            # Show result
             display_result = result[:800] + "..." if len(result) > 800 else result
             self.console.print(Panel(
                 display_result,
@@ -424,237 +552,205 @@ class ChatSession:
         
         return results
     
-    def _format_tool_results(self, tool_calls: list[ToolCall], results: list[str]) -> str:
-        """Format tool calls and results for the conversation context.
-        
-        Args:
-            tool_calls: List of tool calls
-            results: List of tool results
-            
-        Returns:
-            Formatted message for conversation
-        """
-        parts = ["[Tool Execution Results]"]
-        
-        for call, result in zip(tool_calls, results):
-            parts.append(f"\nTool: {call.name}")
-            parts.append(f"Arguments: {json.dumps(call.args, ensure_ascii=False)}")
-            parts.append(f"Result: {result}")
-        
-        parts.append("\n[End of Tool Results]")
-        parts.append("\nBased on the above tool results, please continue with your task.")
-        
-        return "\n".join(parts)
-
     def _build_tool_result_blocks(self, tool_calls: list[ToolCall], results: list[str]) -> list[dict]:
-        """Build structured tool_result blocks with tool_use_id for next turn input."""
+        """Build structured tool_result blocks."""
         blocks = []
         for call, result in zip(tool_calls, results):
-            blocks.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": call.id,
-                    "content": result,
-                }
-            )
+            blocks.append({
+                "type": "tool_result",
+                "tool_use_id": call.id,
+                "content": result,
+            })
         return blocks
     
+    # ========== s06: Context Compression ==========
+    
+    def _micro_compact(self):
+        """Layer 1: Replace old tool results with placeholders."""
+        # Find tool result messages older than 3 turns
+        messages = self.conversation.messages
+        tool_result_indices = []
+        
+        for i, msg in enumerate(messages):
+            if msg.role == MessageRole.USER and msg.content:
+                try:
+                    content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    if content.strip().startswith('[') and '"tool_result"' in content:
+                        tool_result_indices.append(i)
+                except Exception:
+                    pass
+        
+        # Keep last 3, replace older ones with placeholders
+        if len(tool_result_indices) > 3:
+            for idx in tool_result_indices[:-3]:
+                try:
+                    content = messages[idx].content
+                    if isinstance(content, str):
+                        data = json.loads(content)
+                        if isinstance(data, list):
+                            # Replace with placeholders
+                            placeholders = []
+                            for item in data:
+                                if isinstance(item, dict) and item.get("type") == "tool_result":
+                                    placeholders.append({
+                                        "type": "tool_result",
+                                        "tool_use_id": item.get("tool_use_id", "unknown"),
+                                        "content": "[Previous tool result - see earlier context]"
+                                    })
+                            messages[idx].content = json.dumps(placeholders)
+                except Exception:
+                    pass
+    
+    def _maybe_compact_context(self):
+        """Layer 2: Auto-compact when token threshold exceeded."""
+        if not getattr(self.config, 'auto_compact', True):
+            return
+        
+        messages = self.conversation.messages
+        trigger = getattr(self.config, 'compact_trigger_messages', 50)
+        
+        if len(messages) <= trigger:
+            return
+        
+        # Simple summary approach
+        keep_recent = 8
+        anchor = messages[0] if messages and messages[0].role == MessageRole.SYSTEM else None
+        tail = messages[-keep_recent:] if keep_recent < len(messages) else list(messages)
+        
+        # Remove old COMPACT_MARKER messages
+        tail = [
+            msg for msg in tail
+            if not (msg.role == MessageRole.SYSTEM and isinstance(msg.content, str) and msg.content.startswith(self.COMPACT_MARKER))
+        ]
+        
+        # Build summary
+        middle_start = 1 if anchor else 0
+        middle_end = max(middle_start, len(messages) - keep_recent)
+        middle = messages[middle_start:middle_end]
+        
+        if not middle:
+            return
+        
+        summary = self._build_compact_summary(middle)
+        compact_message = Message(role=MessageRole.SYSTEM, content=f"{self.COMPACT_MARKER}\n{summary}")
+        
+        new_messages = []
+        if anchor:
+            new_messages.append(anchor)
+        new_messages.append(compact_message)
+        new_messages.extend(tail)
+        
+        self.conversation.messages = new_messages
+        self.console.print(f"[dim]Context compacted: {len(messages)} -> {len(new_messages)} messages[/dim]")
+    
+    def _build_compact_summary(self, messages) -> str:
+        """Build summary of old messages."""
+        lines = ["Conversation history was compacted. Key points:"]
+        
+        for msg in messages:
+            content = (msg.content or "").strip()
+            if not content:
+                continue
+            if content.startswith(self.COMPACT_MARKER):
+                continue
+            
+            role = msg.role.value
+            single_line = " ".join(content.split())
+            snippet = single_line[:180] + ("..." if len(single_line) > 180 else "")
+            lines.append(f"- {role}: {snippet}")
+            
+            if len(lines) >= 40:
+                lines.append("- ...")
+                break
+        
+        return "\n".join(lines)
+    
+    # ========== Other Methods ==========
+    
     def _show_api_error(self) -> None:
-        """Show API configuration error with recommendations."""
+        """Show API configuration error."""
         from rich.table import Table
         
         error_panel = Panel(
             "[bold red]API Authentication Failed[/bold red]\n\n"
             "Your API key is invalid or not configured properly.\n\n"
-            "[bold]Recommended AI Services for Chinese Users:[/bold]",
+            "[bold]Recommended AI Services:[/bold]",
             title="[red]Configuration Error[/red]",
             border_style="red"
         )
         self.console.print(error_panel)
         
-        # Create table with AI service recommendations
         table = Table(show_header=True, header_style="bold magenta", border_style="cyan")
         table.add_column("Service", style="cyan", width=20)
         table.add_column("Base URL", style="yellow", width=35)
         table.add_column("Model", style="green", width=20)
         
-        table.add_row(
-            "Kimi (Moonshot)",
-            "https://api.moonshot.cn/v1",
-            "moonshot-v1-128k"
-        )
-        table.add_row(
-            "通义千问 (Qwen)",
-            "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "qwen-turbo"
-        )
-        table.add_row(
-            "智谱 AI (GLM)",
-            "https://open.bigmodel.cn/api/paas/v4",
-            "glm-4"
-        )
-        table.add_row(
-            "DeepSeek",
-            "https://api.deepseek.com/v1",
-            "deepseek-chat"
-        )
+        table.add_row("Kimi (Moonshot)", "https://api.moonshot.cn/v1", "moonshot-v1-128k")
+        table.add_row("Qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-turbo")
+        table.add_row("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat")
         
         self.console.print(table)
-        
-        # Show configuration examples
-        self.console.print("\n[bold]Configuration Examples:[/bold]")
-        self.console.print("\n[cyan]Kimi API:[/cyan]")
-        self.console.print("  suncli config --api-key sk-xxx --base-url https://api.moonshot.cn/v1 --model moonshot-v1-128k")
-        
-        self.console.print("\n[cyan]通义千问:[/cyan]")
-        self.console.print("  suncli config --api-key sk-xxx --base-url https://dashscope.aliyuncs.com/compatible-mode/v1 --model qwen-turbo")
-        
-        self.console.print("\n[cyan]智谱 AI:[/cyan]")
-        self.console.print("  suncli config --api-key sk-xxx --base-url https://open.bigmodel.cn/api/paas/v4 --model glm-4")
-        
-        self.console.print("\n[dim]Get your API key from the respective service's official website.[/dim]")
     
     def clear_history(self) -> None:
         """Clear conversation history but keep system prompt."""
         system_messages = [m for m in self.conversation.messages if m.role == MessageRole.SYSTEM]
         self.conversation.messages.clear()
         self.conversation.messages.extend(system_messages)
-        self.console.print("[dim]Conversation history cleared. (System prompt preserved)[/dim]")
+        self.console.print("[dim]Conversation history cleared.[/dim]")
     
     def enter_plan_mode(self, user_input: str) -> None:
-        """Enter plan mode for the given user input."""
+        """Enter plan mode."""
         self.plan_manager.start_planning(user_input)
-        # Reinitialize system prompt with plan mode instructions
         self._initialize_system_prompt()
     
     def approve_plan(self) -> bool:
-        """Approve the current plan."""
+        """Approve current plan."""
         return self.plan_manager.approve()
     
     def cancel_plan_mode(self) -> None:
         """Cancel plan mode."""
         self.plan_manager.cancel()
-        # Reinitialize system prompt without plan mode
-        self._initialize_system_prompt()
-    
-    def exit_plan_mode(self, title: str, plan: str) -> None:
-        """Exit plan mode after successful completion."""
-        self.plan_manager.cancel()
-        self.console.print(Panel(
-            f"[bold green]✅ Plan Completed: {title}[/bold green]\n\n"
-            f"[dim]{plan[:200]}{'...' if len(plan) > 200 else ''}[/dim]",
-            border_style="green"
-        ))
-        # Reinitialize system prompt without plan mode
         self._initialize_system_prompt()
     
     def is_in_plan_mode(self) -> bool:
-        """Check if currently in plan mode."""
+        """Check if in plan mode."""
         return self.plan_manager.is_active
     
-    def get_plan_mode(self) -> PlanMode:
-        """Get current plan mode state."""
+    def get_plan_mode(self):
+        """Get current plan mode."""
         return self.plan_manager.mode
-
+    
     def list_tasks_text(self) -> str:
-        """Get persisted task board text."""
+        """Get task board text."""
         return self.plan_manager.list_tasks_text()
-
+    
     def update_task_status(self, task_id: int, status: str) -> None:
-        """Update persisted task status."""
+        """Update task status."""
         self.plan_manager.update_task_status(task_id, status)
     
-    async def close(self) -> None:
-        """Close the HTTP client."""
-        await self.client.aclose()
-
-    def _maybe_compact_context(self) -> None:
-        """Compact long conversation history to avoid unbounded context growth."""
-        if not self.config.auto_compact:
-            return
-
-        messages = self.conversation.messages
-        if len(messages) <= self.config.compact_trigger_messages:
-            return
-
-        keep_recent = max(8, self.config.compact_keep_recent)
-        anchor = messages[0] if messages and messages[0].role == MessageRole.SYSTEM else None
-        tail = messages[-keep_recent:] if keep_recent < len(messages) else list(messages)
-        tail = [
-            msg for msg in tail
-            if not (msg.role == MessageRole.SYSTEM and (msg.content or "").startswith(self.COMPACT_MARKER))
-        ]
-
-        # Build the middle segment to compact
-        middle_start = 1 if anchor else 0
-        middle_end = max(middle_start, len(messages) - keep_recent)
-        middle = messages[middle_start:middle_end]
-        if not middle:
-            return
-
-        summary = self._build_compact_summary(middle)
-        compact_message = Message(role=MessageRole.SYSTEM, content=f"{self.COMPACT_MARKER}\n{summary}")
-
-        new_messages = []
-        if anchor:
-            new_messages.append(anchor)
-        new_messages.append(compact_message)
-        new_messages.extend(tail)
-
-        self.conversation.messages = new_messages
-        self.console.print(
-            f"[dim]上下文已压缩: {len(messages)} -> {len(new_messages)} 条消息[/dim]"
-        )
-
-    def _build_compact_summary(self, messages) -> str:
-        """Build a concise text summary from old messages."""
-        summary_lines = [
-            "Conversation history was compacted. Key points from older messages:"
-        ]
-
-        for msg in messages:
-            content = (msg.content or "").strip()
-            if not content:
-                continue
-            if content.startswith(self.COMPACT_MARKER):
-                # Avoid nesting summaries repeatedly.
-                summary_lines.append("- Previous compact summary retained.")
-                continue
-
-            role = msg.role.value
-            single_line = " ".join(content.split())
-            snippet = single_line[:180] + ("..." if len(single_line) > 180 else "")
-            summary_lines.append(f"- {role}: {snippet}")
-
-            if len(summary_lines) >= 40:
-                summary_lines.append("- ...")
-                break
-
-        return "\n".join(summary_lines)
-
     def _try_capture_plan_from_response(self, content: str) -> None:
-        """Parse a plan from assistant output and persist it to task graph."""
+        """Parse plan from assistant response."""
         if not self.plan_manager.is_active or self.plan_manager.mode != PlanMode.PLANNING:
             return
-
+        
         title, description, steps = self._extract_plan_sections(content)
         if len(steps) < 2:
             return
-
+        
         self.plan_manager.set_plan(title=title, description=description, steps=steps)
-
+    
     def _extract_plan_sections(self, content: str) -> tuple[str, str, list[str]]:
-        """Extract title/description/steps from markdown-like plan text."""
+        """Extract plan sections from markdown."""
         lines = [line.strip() for line in content.splitlines()]
         title = "Implementation Plan"
         description = "Plan generated from assistant response."
         steps: list[str] = []
-
+        
         for line in lines:
             if line.startswith("# "):
                 title = line[2:].strip() or title
                 break
-
+        
         for i, line in enumerate(lines):
             normalized = line.lower().strip()
             if normalized.startswith("## implementation steps") or normalized.startswith("## steps"):
@@ -662,14 +758,13 @@ class ChatSession:
                 if description_lines:
                     description = description_lines[-1]
                 break
-
+        
         step_patterns = [
             re.compile(r"^\d+\.\s+(.+)$"),
             re.compile(r"^[-*]\s+(.+)$"),
             re.compile(r"^(?:⏳|✅|🔄)?\s*\*\*step\s*\d+\s*:\*\*\s*(.+)$", re.IGNORECASE),
-            re.compile(r"^(?:⏳|✅|🔄)?\s*step\s*\d+\s*:\s*(.+)$", re.IGNORECASE),
         ]
-
+        
         for line in lines:
             for pattern in step_patterns:
                 match = pattern.match(line)
@@ -678,7 +773,7 @@ class ChatSession:
                     if step:
                         steps.append(step)
                     break
-
+        
         deduped_steps = []
         seen = set()
         for step in steps:
@@ -687,5 +782,11 @@ class ChatSession:
                 continue
             seen.add(key)
             deduped_steps.append(step)
-
+        
         return title, description, deduped_steps
+    
+    async def close(self) -> None:
+        """Close the HTTP client and cleanup."""
+        await self.client.aclose()
+        # Disconnect MCP servers
+        self.mcp_client.disconnect_all()

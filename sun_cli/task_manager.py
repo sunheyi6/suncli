@@ -23,6 +23,14 @@ class Task:
     description: str = ""
     created_at: int = 0
     updated_at: int = 0
+    # s15-s17: Team support
+    owner: str = ""  # Who claimed this task
+    claim_role: str = ""  # Required role to claim
+    claimed_at: int = 0
+    claim_source: str = ""  # "auto" or "manual"
+    # s18: Worktree binding
+    worktree: str = ""
+    worktree_state: str = ""  # active, kept, removed, unbound
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -37,6 +45,12 @@ class Task:
             description=str(data.get("description", "")),
             created_at=int(data.get("created_at", 0)),
             updated_at=int(data.get("updated_at", 0)),
+            owner=str(data.get("owner", "")),
+            claim_role=str(data.get("claim_role", "")),
+            claimed_at=int(data.get("claimed_at", 0)),
+            claim_source=str(data.get("claim_source", "")),
+            worktree=str(data.get("worktree", "")),
+            worktree_state=str(data.get("worktree_state", "")),
         )
 
 
@@ -176,7 +190,115 @@ class TaskManager:
         for task in tasks:
             deps = ",".join(str(d) for d in task.depends_on) if task.depends_on else "-"
             ready = "ready" if self.is_ready(task) else "blocked"
+            owner = f" @{task.owner}" if task.owner else ""
             lines.append(
-                f"#{task.id} [{task.status}] ({ready}) deps:{deps}  {task.title}"
+                f"#{task.id} [{task.status}]{owner} ({ready}) deps:{deps}  {task.title}"
             )
         return "\n".join(lines)
+
+    # s17: Auto-claim support
+    
+    def find_claimable(self, role: str = None) -> list[dict]:
+        """Find tasks that can be auto-claimed.
+        
+        Args:
+            role: Optional role filter
+            
+        Returns:
+            List of claimable task dicts
+        """
+        claimable = []
+        for task in self.list_tasks():
+            # Must be pending
+            if task.status != "pending":
+                continue
+            # Must not have owner
+            if task.owner:
+                continue
+            # Dependencies must be completed
+            if not self.is_ready(task):
+                continue
+            # Role must match if specified
+            if task.claim_role and role and task.claim_role != role:
+                continue
+                
+            claimable.append(task.to_dict())
+        
+        return claimable
+    
+    def claim_task(
+        self,
+        task_id: int,
+        owner: str,
+        source: str = "manual",
+    ) -> bool:
+        """Claim a task.
+        
+        Args:
+            task_id: Task to claim
+            owner: Who is claiming
+            source: "auto" or "manual"
+            
+        Returns:
+            True if claimed successfully
+        """
+        try:
+            task = self._load_task(task_id)
+        except ValueError:
+            return False
+        
+        # Check if already claimed
+        if task.owner:
+            return False
+        
+        # Check dependencies
+        if not self.is_ready(task):
+            return False
+        
+        # Claim
+        task.owner = owner
+        task.status = "in_progress"
+        task.claimed_at = int(time.time())
+        task.claim_source = source
+        task.updated_at = int(time.time())
+        
+        self._save_task(task)
+        self._emit_claim_event(task_id, owner, source)
+        
+        return True
+    
+    def _emit_claim_event(self, task_id: int, owner: str, source: str):
+        """Write claim event to log."""
+        events_path = self.tasks_dir / "claim_events.jsonl"
+        event = {
+            "event": "task.claimed",
+            "task_id": task_id,
+            "owner": owner,
+            "source": source,
+            "ts": time.time(),
+        }
+        with open(events_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    
+    def bind_worktree(self, task_id: int, worktree_name: str):
+        """Bind a worktree to a task (s18).
+        
+        Args:
+            task_id: Task ID
+            worktree_name: Worktree name
+        """
+        task = self._load_task(task_id)
+        task.worktree = worktree_name
+        task.worktree_state = "active"
+        if task.status == "pending":
+            task.status = "in_progress"
+        task.updated_at = int(time.time())
+        self._save_task(task)
+    
+    def unbind_worktree(self, task_id: int):
+        """Unbind worktree from task."""
+        task = self._load_task(task_id)
+        task.worktree = ""
+        task.worktree_state = "unbound"
+        task.updated_at = int(time.time())
+        self._save_task(task)

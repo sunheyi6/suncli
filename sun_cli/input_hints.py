@@ -126,12 +126,17 @@ class InlineMenuRenderer:
         return lines
 
 
-async def get_input_with_inline_menu(prompt: str, commands: List[Tuple[str, str, str]]) -> str:
-    """Get user input with inline slash command menu.
+async def get_input_with_inline_menu(
+    prompt: str, 
+    commands: List[Tuple[str, str, str]],
+    history=None,
+) -> str:
+    """Get user input with inline slash command menu and history support.
     
     Args:
         prompt: Prompt text to display
         commands: List of (command, chinese_desc, english_desc) tuples
+        history: Optional FileHistory instance for up/down navigation
     
     Returns:
         User input string
@@ -163,7 +168,9 @@ async def get_input_with_inline_menu(prompt: str, commands: List[Tuple[str, str,
                 is_navigating[0] = True
                 event.app.invalidate()
             else:
-                event.app.current_buffer.auto_up()
+                # Normal history navigation
+                buffer = event.app.current_buffer
+                buffer.history_backward(count=1)
         
         @kb.add('down')
         def _(event):
@@ -172,17 +179,35 @@ async def get_input_with_inline_menu(prompt: str, commands: List[Tuple[str, str,
                 is_navigating[0] = True
                 event.app.invalidate()
             else:
-                event.app.current_buffer.auto_down()
+                # Normal history navigation
+                buffer = event.app.current_buffer
+                buffer.history_forward(count=1)
         
+        def _persist_history(text: str) -> None:
+            """Persist accepted input into prompt history."""
+            if history is None:
+                return
+
+            value = text.strip()
+            if not value:
+                return
+
+            try:
+                history.append_string(value)
+            except Exception:
+                # Keep input flow stable even if history persistence fails.
+                pass
+
         @kb.add('enter')
         def _(event):
             buffer = event.app.current_buffer
-            if menu.visible and (is_navigating[0] or buffer.text.strip() == "/"):
+            if menu.visible:
                 # Use selected command
                 selected = menu.get_selected_command()
                 if selected:
                     buffer.text = selected
                     buffer.cursor_position = len(selected)
+            _persist_history(buffer.text)
             event.app.exit(result=buffer.text)
         
         @kb.add('c-c')
@@ -205,8 +230,11 @@ async def get_input_with_inline_menu(prompt: str, commands: List[Tuple[str, str,
                     menu.update(selected)
                     is_navigating[0] = True
         
-        # Create buffer with change handler
-        buffer = Buffer(multiline=False)
+        # Create buffer with change handler and history
+        buffer = Buffer(
+            multiline=False,
+            history=history,  # Enable up/down history navigation
+        )
         
         @buffer.on_text_changed.add_handler
         def on_change(_):

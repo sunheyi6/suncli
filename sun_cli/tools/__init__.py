@@ -1,8 +1,12 @@
-"""Core tools for Sun CLI - read, write, edit, bash."""
+"""Core tools for Sun CLI - read, write, edit, bash with sandbox (s02)."""
 
+import os
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-from dataclasses import dataclass
+
+from .sandbox import safe_path, SandboxError
 
 
 @dataclass
@@ -13,28 +17,48 @@ class ToolResult:
     error: Optional[str] = None
 
 
-def read_file(file_path: str) -> ToolResult:
-    """Read file content.
+def read_file(file_path: str, limit: int = None, offset: int = None) -> ToolResult:
+    """Read file content with sandbox protection.
     
     Args:
         file_path: Path to the file to read
+        limit: Maximum lines to read (optional)
+        offset: Starting line number (optional)
         
     Returns:
         ToolResult with file content or error
     """
     try:
-        path = Path(file_path)
+        path = safe_path(file_path)
         if not path.exists():
             return ToolResult(success=False, content="", error=f"File not found: {file_path}")
         
         content = path.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        
+        # Apply offset
+        if offset and offset > 0:
+            lines = lines[offset:]
+            
+        # Apply limit
+        if limit and limit > 0:
+            lines = lines[:limit]
+            
+        content = "\n".join(lines)
+        
+        # Truncate if too large (>50KB)
+        if len(content) > 50000:
+            content = content[:50000] + "\n\n[Content truncated at 50000 chars]"
+            
         return ToolResult(success=True, content=content)
+    except SandboxError as e:
+        return ToolResult(success=False, content="", error=str(e))
     except Exception as e:
         return ToolResult(success=False, content="", error=str(e))
 
 
 def write_file(file_path: str, content: str) -> ToolResult:
-    """Write content to file.
+    """Write content to file with sandbox protection.
     
     Args:
         file_path: Path to the file to write
@@ -44,16 +68,18 @@ def write_file(file_path: str, content: str) -> ToolResult:
         ToolResult indicating success or failure
     """
     try:
-        path = Path(file_path)
+        path = safe_path(file_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return ToolResult(success=True, content=f"Written to {file_path}")
+    except SandboxError as e:
+        return ToolResult(success=False, content="", error=str(e))
     except Exception as e:
         return ToolResult(success=False, content="", error=str(e))
 
 
 def edit_file(file_path: str, old_str: str, new_str: str) -> ToolResult:
-    """Edit file by replacing old_str with new_str.
+    """Edit file by replacing old_str with new_str (sandbox protected).
     
     Args:
         file_path: Path to the file to edit
@@ -64,7 +90,7 @@ def edit_file(file_path: str, old_str: str, new_str: str) -> ToolResult:
         ToolResult indicating success or failure
     """
     try:
-        path = Path(file_path)
+        path = safe_path(file_path)
         if not path.exists():
             return ToolResult(success=False, content="", error=f"File not found: {file_path}")
         
@@ -80,25 +106,31 @@ def edit_file(file_path: str, old_str: str, new_str: str) -> ToolResult:
         new_content = content.replace(old_str, new_str)
         path.write_text(new_content, encoding="utf-8")
         return ToolResult(success=True, content=f"Edited {file_path}")
+    except SandboxError as e:
+        return ToolResult(success=False, content="", error=str(e))
     except Exception as e:
         return ToolResult(success=False, content="", error=str(e))
 
 
-def run_bash(command: str, cwd: Optional[str] = None) -> ToolResult:
-    """Execute a bash command.
+def run_bash(command: str, cwd: Optional[str] = None, timeout: int = 60) -> ToolResult:
+    """Execute a bash command with sandbox protection.
     
     Args:
         command: Command to execute
         cwd: Working directory (optional)
+        timeout: Timeout in seconds (default: 60)
         
     Returns:
         ToolResult with command output
     """
-    import subprocess
-    import os
-    
     try:
-        working_dir = cwd if cwd else os.getcwd()
+        working_dir = cwd
+        if cwd:
+            # Validate cwd is within workspace
+            working_dir = str(safe_path(cwd))
+        else:
+            working_dir = os.getcwd()
+            
         result = subprocess.run(
             command,
             shell=True,
@@ -106,7 +138,8 @@ def run_bash(command: str, cwd: Optional[str] = None) -> ToolResult:
             text=True,
             cwd=working_dir,
             encoding="utf-8",
-            errors="replace"
+            errors="replace",
+            timeout=timeout,
         )
         
         output = result.stdout
@@ -118,6 +151,14 @@ def run_bash(command: str, cwd: Optional[str] = None) -> ToolResult:
             content=output,
             error=None if result.returncode == 0 else f"Exit code: {result.returncode}"
         )
+    except subprocess.TimeoutExpired:
+        return ToolResult(
+            success=False, 
+            content="", 
+            error=f"Command timed out after {timeout} seconds"
+        )
+    except SandboxError as e:
+        return ToolResult(success=False, content="", error=str(e))
     except Exception as e:
         return ToolResult(success=False, content="", error=str(e))
 
