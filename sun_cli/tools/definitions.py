@@ -219,12 +219,32 @@ WORKTREE_CLOSEOUT_TOOL = ToolDefinition(
     ],
 )
 
+# Web Search tool (DuckDuckGo)
+WEB_SEARCH_TOOL = ToolDefinition(
+    name="web_search",
+    description="Search the web using DuckDuckGo. Returns search results including titles, URLs, and snippets.",
+    parameters=[
+        ToolParameter("query", "string", "Search query"),
+        ToolParameter("max_results", "integer", "Maximum results (1-10, default: 5)", required=False),
+    ],
+)
+
+WEATHER_NOW_TOOL = ToolDefinition(
+    name="weather_now",
+    description="Get current weather and today's forecast for a city/location.",
+    parameters=[
+        ToolParameter("location", "string", "Location name, e.g. 'Beijing' or '北京'", required=False),
+    ],
+)
+
 # Collect all tools
 ALL_TOOLS: list[ToolDefinition] = [
     READ_TOOL,
     WRITE_TOOL,
     EDIT_TOOL,
     BASH_TOOL,
+    WEB_SEARCH_TOOL,  # Web search
+    WEATHER_NOW_TOOL,
     SUBAGENT_TOOL,
     BACKGROUND_RUN_TOOL,
     BACKGROUND_CHECK_TOOL,
@@ -286,6 +306,7 @@ def build_tools_prompt() -> str:
         "4. **Verify results**: After editing, read the file again",
         "5. **Use bash wisely**: For git operations, tests, file listing",
         "6. **Handle errors**: If a tool fails, analyze and try alternatives",
+        "7. **Weather questions**: For weather/current conditions, use `weather_now` first and avoid guessing",
         "",
     ])
     

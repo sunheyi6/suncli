@@ -128,8 +128,8 @@ class ToolExecutor:
         """
         self._handlers[name] = handler
         
-    def execute(self, call: ToolCall) -> str:
-        """Execute a tool call.
+    async def execute(self, call: ToolCall) -> str:
+        """Execute a tool call (async).
         
         Args:
             call: ToolCall to execute
@@ -137,10 +137,18 @@ class ToolExecutor:
         Returns:
             Result string
         """
+        import asyncio
+        import inspect
+        
         # Check custom handlers first
         if call.name in self._handlers:
             try:
-                result = self._handlers[call.name](**call.args)
+                handler = self._handlers[call.name]
+                # Check if handler is async
+                if inspect.iscoroutinefunction(handler):
+                    result = await handler(**call.args)
+                else:
+                    result = handler(**call.args)
                 if isinstance(result, ToolResult):
                     return result.content if result.success else f"Error: {result.error}"
                 return str(result)

@@ -1,5 +1,6 @@
 """Chat functionality for Sun CLI - Full s01-s19 implementation."""
 
+import asyncio
 import json
 import uuid
 import re
@@ -119,6 +120,10 @@ class ChatSession:
     
     def _register_custom_tools(self):
         """Register extended tool handlers."""
+        # Web Search (async handler)
+        self.tool_executor.register_handler("web_search", self._do_web_search)
+        self.tool_executor.register_handler("weather_now", self._do_weather_now)
+        
         # s04: Subagent
         self.tool_executor.register_handler("subagent", self._handle_subagent)
         
@@ -147,6 +152,95 @@ class ChatSession:
         # s09: Memory
         self.tool_executor.register_handler("save_memory", self._handle_save_memory)
         self.tool_executor.register_handler("load_memory", self._handle_load_memory)
+    
+    # ========== Web Search ==========
+    
+    async def _do_web_search(self, query: str, max_results: int = 5) -> str:
+        """Async implementation of web search."""
+        normalized = (query or "").strip()
+        lower_q = normalized.lower()
+        if normalized and (
+            "天气" in normalized
+            or "气温" in normalized
+            or "weather" in lower_q
+            or "temperature" in lower_q
+        ):
+            location = self._extract_weather_location(normalized)
+            return await self._do_weather_now(location=location)
+
+        from .tools.web_search import DuckDuckGoSearch
+        
+        searcher = DuckDuckGoSearch()
+        try:
+            results = await searcher.search(normalized, max(1, min(10, int(max_results) if max_results else 5)))
+            await searcher.close()
+            
+            if not results:
+                return "No results found. Try a different query."
+            
+            lines = [f"Search results for: '{query}'\n"]
+            for i, result in enumerate(results, 1):
+                lines.append(f"{i}. {result.title}")
+                if result.href:
+                    lines.append(f"   URL: {result.href}")
+                if result.body:
+                    snippet = result.body[:200] + "..." if len(result.body) > 200 else result.body
+                    lines.append(f"   {snippet}")
+                lines.append("")
+            
+            return "\n".join(lines)
+        except Exception as e:
+            await searcher.close()
+            return f"Search failed: {str(e)}"
+
+    @staticmethod
+    def _extract_weather_location(query: str) -> str:
+        """Extract a best-effort location from weather query."""
+        if "北京" in query:
+            return "北京"
+
+        m = re.search(r"([\u4e00-\u9fffA-Za-z\s]{1,20})天气", query)
+        if m:
+            location = m.group(1).strip()
+            for noise in ["今日", "今天", "实时", "当前", "温度", "降水", "预报", "查询", "搜索"]:
+                location = location.replace(noise, "")
+            location = "".join(location.split()).strip()
+            if location:
+                return location
+
+        return "Beijing"
+
+    async def _do_weather_now(self, location: str = "Beijing") -> str:
+        """Fetch current weather and today's forecast from wttr.in."""
+        from urllib.parse import quote
+
+        url = f"https://wttr.in/{quote(location)}?format=j1"
+        try:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                resp = await client.get(url, headers={"Accept": "application/json"})
+                resp.raise_for_status()
+                data = resp.json()
+
+            current = (data.get("current_condition") or [{}])[0]
+            today = (data.get("weather") or [{}])[0]
+            desc_items = current.get("weatherDesc") or []
+            desc = desc_items[0].get("value", "") if desc_items else ""
+
+            lines = [
+                f"Weather for {location}",
+                f"- Condition: {desc or 'N/A'}",
+                f"- Current Temp: {current.get('temp_C', 'N/A')}°C",
+                f"- Feels Like: {current.get('FeelsLikeC', current.get('feelslike_C', 'N/A'))}°C",
+                f"- Humidity: {current.get('humidity', 'N/A')}%",
+                f"- Wind: {current.get('windspeedKmph', 'N/A')} km/h {current.get('winddir16Point', '')}".strip(),
+                f"- Precipitation: {current.get('precipMM', 'N/A')} mm",
+                f"- UV Index: {current.get('uvIndex', 'N/A')}",
+                f"- Today's High/Low: {today.get('maxtempC', 'N/A')}°C / {today.get('mintempC', 'N/A')}°C",
+                "- Source: wttr.in",
+            ]
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Weather lookup failed: {e}"
     
     def _initialize_system_prompt(self) -> None:
         """Load system prompt with all extensions."""
@@ -418,8 +512,8 @@ class ChatSession:
                 return full_content
             
             # Execute tool calls
-            if iteration > 0:
-                self.console.print(f"\n[dim][Analyzing... {iteration + 1}/{max_tool_iterations}][/dim]")
+            if iteration > 0 and self.config.show_tool_traces:
+                self.console.print(f"\n[dim][Analyzing... {iteration + 1}/{max_iterations}][/dim]")
             
             tool_results = await self._execute_tool_calls(tool_calls)
             
@@ -513,44 +607,111 @@ class ChatSession:
             raise
     
     async def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> list[str]:
-        """Execute tool calls with deduplication."""
+        """Execute tool calls with deduplication and compact progress UI."""
         results = []
         executed = {}
-        
-        for i, call in enumerate(tool_calls, 1):
-            # Deduplication key
-            args_key = json.dumps(call.args, sort_keys=True, ensure_ascii=False)
-            cache_key = (call.name, args_key)
-            
-            if cache_key in executed:
-                self.console.print(Panel(
-                    f"[dim]{call.to_string()}[/dim]",
-                    title=f"[bold blue]Tool {i}/{len(tool_calls)}[/bold blue] [yellow](duplicate)[/yellow]",
-                    border_style="yellow"
-                ))
-                results.append(executed[cache_key])
-                continue
-            
-            self.console.print(Panel(
-                f"[cyan]{call.to_string()}[/cyan]",
-                title=f"[bold blue]Tool {i}/{len(tool_calls)}[/bold blue]",
-                border_style="blue"
-            ))
-            
-            # Execute via executor
-            result = self.tool_executor.execute(call)
-            executed[cache_key] = result
-            results.append(result)
-            
-            # Show result
-            display_result = result[:800] + "..." if len(result) > 800 else result
-            self.console.print(Panel(
-                display_result,
-                title="[dim]Result[/dim]",
-                border_style="green" if "Error" not in result else "red"
-            ))
-        
+        progress_items: list[dict[str, str]] = []
+        spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+        with Live(self._render_tool_progress(progress_items), console=self.console, refresh_per_second=12) as live:
+            for call in tool_calls:
+                # Deduplication key
+                args_key = json.dumps(call.args, sort_keys=True, ensure_ascii=False)
+                cache_key = (call.name, args_key)
+
+                if cache_key in executed:
+                    progress_items.append({
+                        "status": "success",
+                        "text": f"{self._format_tool_call_label(call)} (cached)",
+                    })
+                    results.append(executed[cache_key])
+                    live.update(self._render_tool_progress(progress_items))
+                    continue
+
+                item = {
+                    "status": "running",
+                    "text": self._format_tool_call_label(call),
+                }
+                progress_items.append(item)
+                live.update(self._render_tool_progress(progress_items, spinner_frames[0]))
+
+                exec_task = asyncio.create_task(self.tool_executor.execute(call))
+                spin_index = 0
+                while not exec_task.done():
+                    live.update(self._render_tool_progress(progress_items, spinner_frames[spin_index % len(spinner_frames)]))
+                    spin_index += 1
+                    await asyncio.sleep(0.08)
+
+                result = await exec_task
+                executed[cache_key] = result
+                results.append(result)
+
+                if result.strip().lower().startswith("error"):
+                    item["status"] = "error"
+                    item["text"] = f"{item['text']} - {self._short_error(result)}"
+                else:
+                    item["status"] = "success"
+
+                live.update(self._render_tool_progress(progress_items))
+
         return results
+
+    def _format_tool_call_label(self, call: ToolCall) -> str:
+        """Format a concise, user-friendly tool execution label."""
+        tool_name_map = {
+            "read": "Used ReadFile",
+            "write": "Used WriteFile",
+            "edit": "Used StrReplaceFile",
+            "bash": "Used Bash",
+            "web_search": "Used WebSearch",
+            "weather_now": "Used WeatherNow",
+        }
+        base = tool_name_map.get(call.name, f"Used {call.name}")
+
+        context = (
+            call.args.get("file_path")
+            or call.args.get("location")
+            or call.args.get("query")
+            or call.args.get("command")
+            or ""
+        )
+        context = str(context).strip()
+        if context:
+            if len(context) > 56:
+                context = context[:53] + "..."
+            return f"{base} ({context})"
+        return base
+
+    @staticmethod
+    def _short_error(result: str) -> str:
+        """Extract a short one-line error summary."""
+        msg = result.replace("\n", " ").strip()
+        if msg.lower().startswith("error:"):
+            msg = msg[6:].strip()
+        return msg[:72] + ("..." if len(msg) > 72 else "")
+
+    @staticmethod
+    def _render_tool_progress(items: list[dict[str, str]], spinner: Optional[str] = None):
+        """Render compact tool progress lines with status dots and spinner."""
+        lines = []
+        for item in items:
+            status = item.get("status", "running")
+            text = item.get("text", "")
+            if status == "success":
+                dot = "[green]●[/green]"
+            elif status == "error":
+                dot = "[red]●[/red]"
+            else:
+                dot = "[yellow]●[/yellow]"
+            lines.append(Text.from_markup(f"{dot} {text}"))
+
+        if spinner:
+            lines.append(Text.from_markup(f"[cyan]{spinner} 正在思考执行...[/cyan]"))
+
+        if not lines:
+            lines.append(Text.from_markup("[cyan]⠋ 正在思考执行...[/cyan]"))
+
+        return Group(*lines)
     
     def _build_tool_result_blocks(self, tool_calls: list[ToolCall], results: list[str]) -> list[dict]:
         """Build structured tool_result blocks."""

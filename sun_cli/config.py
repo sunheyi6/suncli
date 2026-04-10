@@ -48,6 +48,7 @@ class Config(BaseSettings):
     auto_compact: bool = Field(default=True, description="Automatically compact long conversation history")
     compact_trigger_messages: int = Field(default=40, ge=20, description="Trigger compaction when message count exceeds this value")
     compact_keep_recent: int = Field(default=16, ge=8, description="How many recent messages to keep uncompressed")
+    show_tool_traces: bool = Field(default=False, description="Show tool execution trace panels in chat")
     
     @property
     def is_configured(self) -> bool:
@@ -103,6 +104,7 @@ def update_config(**kwargs) -> Config:
         'auto_compact': 'SUN_AUTO_COMPACT',
         'compact_trigger_messages': 'SUN_COMPACT_TRIGGER_MESSAGES',
         'compact_keep_recent': 'SUN_COMPACT_KEEP_RECENT',
+        'show_tool_traces': 'SUN_SHOW_TOOL_TRACES',
     }
     
     # Update values

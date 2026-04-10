@@ -638,6 +638,12 @@ def config(
     no_confirm: Optional[bool] = typer.Option(
         None, "--no-yolo", help="Disable auto-confirm mode"
     ),
+    show_tools: Optional[bool] = typer.Option(
+        None, "--show-tools", help="Show tool execution traces in chat"
+    ),
+    hide_tools: Optional[bool] = typer.Option(
+        None, "--hide-tools", help="Hide tool execution traces in chat (default)"
+    ),
     show: bool = typer.Option(
         False, "--show", "-s", help="Show current configuration"
     ),
@@ -647,13 +653,15 @@ def config(
     
     if show:
         yolo_status = "[green][OK] 已启用[/green]" if cfg.yolo_mode else "[dim]已禁用[/dim]"
+        tool_trace_status = "[green][OK] 已显示[/green]" if cfg.show_tool_traces else "[dim]已隐藏[/dim]"
         console.print(Panel.fit(
             f"[bold]Current Configuration[/bold]\n\n"
             f"API Key: {'[green][OK] Set[/green]' if cfg.is_configured else '[red][X] Not set[/red]'}\n"
             f"Base URL: [cyan]{cfg.base_url}[/cyan]\n"
             f"Model: [cyan]{cfg.model}[/cyan]\n"
             f"Temperature: [cyan]{cfg.temperature}[/cyan]\n"
-            f"Auto Confirm (Yolo): {yolo_status}",
+            f"Auto Confirm (Yolo): {yolo_status}\n"
+            f"Tool Traces: {tool_trace_status}",
             title="Sun CLI Config"
         ))
         return
@@ -678,8 +686,25 @@ def config(
     if no_confirm is True:
         update_config(auto_confirm=False)
         console.print("[green][OK][/green] 自动确认模式已禁用，恢复手动确认。")
+
+    if show_tools is True:
+        update_config(show_tool_traces=True)
+        console.print("[green][OK][/green] 已启用工具调用过程展示。")
+
+    if hide_tools is True:
+        update_config(show_tool_traces=False)
+        console.print("[green][OK][/green] 已关闭工具调用过程展示（默认）。")
     
-    if not api_key and not base_url and not model and auto_confirm is None and no_confirm is None and not show:
+    if (
+        not api_key
+        and not base_url
+        and not model
+        and auto_confirm is None
+        and no_confirm is None
+        and show_tools is None
+        and hide_tools is None
+        and not show
+    ):
         console.print("[yellow]Use --help to see available options[/yellow]")
 
 
