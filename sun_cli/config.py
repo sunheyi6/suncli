@@ -4,7 +4,8 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseSettings, Field
+from pydantic_settings import BaseSettings
+from pydantic import Field
 
 
 def get_config_dir() -> Path:
