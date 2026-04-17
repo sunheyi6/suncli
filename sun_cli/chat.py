@@ -507,7 +507,12 @@ class ChatSession:
                 self.conversation.add_message(MessageRole.ASSISTANT, full_content)
                 # Only print if not already displayed during streaming
                 if not should_display:
-                    self.console.print(Markdown(full_content))
+                    # Show assistant header with border
+                    self.console.print("[bold blue]Assistant:[/bold blue]")
+                    self.console.print("─" * 80)
+                    # Print full content directly to ensure nothing is truncated
+                    self.console.print(full_content)
+                    self.console.print("─" * 80)
                 state["transition_reason"] = None
                 return full_content
             
@@ -568,9 +573,16 @@ class ChatSession:
                 full_content = ""
                 
                 if display_output:
-                    # Kimi CLI-like streaming: print incremental deltas directly.
-                    # This avoids repeated full-buffer re-render artifacts when input
-                    # prompt is kept active/fixed at the bottom.
+                    # Show assistant header with border
+                    from rich.panel import Panel
+                    from rich.text import Text
+                    import sys
+                    
+                    # Print assistant header
+                    self.console.print("[bold blue]Assistant:[/bold blue]")
+                    self.console.print("─" * 80)
+                    
+                    # Kimi CLI-like streaming: print incremental deltas directly
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
                             data = line[6:]
@@ -581,9 +593,14 @@ class ChatSession:
                                 delta = chunk["choices"][0]["delta"].get("content", "")
                                 if delta:
                                     full_content += delta
+                                    # Stream output directly
                                     self.console.print(delta, end="")
                             except (json.JSONDecodeError, KeyError):
                                 continue
+                    
+                    # Print footer line
+                    self.console.print()
+                    self.console.print("─" * 80)
                 else:
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):

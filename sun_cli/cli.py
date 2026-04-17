@@ -1132,6 +1132,13 @@ async def _handle_message(session: ChatSession, message: str) -> None:
         return
     
     try:
+        # Display user input with border
+        console.print(Panel(
+            message,
+            title="[bold green]You[/bold green]",
+            border_style="green"
+        ))
+        
         # Stream response with live display
         await session.stream_message(message)
         console.print()  # Add newline after response
