@@ -14,9 +14,10 @@ try:
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.key_binding.key_processor import KeyPressEvent
     from prompt_toolkit.layout import Layout, HSplit, Window, ConditionalContainer
-    from prompt_toolkit.layout.controls import UIContent, UIControl, BufferControl
+    from prompt_toolkit.layout.controls import UIContent, UIControl, BufferControl, FormattedTextControl
     from prompt_toolkit.layout.dimension import Dimension
     from prompt_toolkit.layout.processors import BeforeInput
+    from prompt_toolkit.patch_stdout import patch_stdout
     from prompt_toolkit.styles import Style
     from prompt_toolkit.utils import get_cwidth
     HAS_UI = True
@@ -218,6 +219,12 @@ async def get_input_with_inline_menu(
         def _(event):
             event.app.exit(result="exit")
         
+        @kb.add('c-o')
+        def _(event):
+            # Force switch to next queued message:
+            # interrupt current output and continue with waiting queue.
+            event.app.exit(result="__SUNCLI_FORCE_NEXT__")
+        
         @kb.add('tab')
         def _(event):
             # Tab to select current item
@@ -243,10 +250,34 @@ async def get_input_with_inline_menu(
         
         # Create the application
         from prompt_toolkit.application import Application
+
+        separator_line = FormattedTextControl(
+            lambda: [("class:input-separator", "─" * 2000)]
+        )
         
         app = Application(
             layout=Layout(
                 HSplit([
+                    # Upper area (chat history scrolls in terminal output)
+                    Window(
+                        content=FormattedTextControl(""),
+                        height=Dimension(weight=1),
+                    ),
+                    # Inline slash menu stays above the separator/input area
+                    ConditionalContainer(
+                        content=Window(
+                            content=InlineMenuControl(menu),
+                            height=Dimension(max=menu.max_items),
+                            style="",
+                        ),
+                        filter=Condition(lambda: menu.visible),
+                    ),
+                    # Separator between history and fixed input area
+                    Window(
+                        content=separator_line,
+                        height=Dimension.exact(1),
+                        dont_extend_height=True,
+                    ),
                     # Input line
                     Window(
                         content=BufferControl(
@@ -257,27 +288,22 @@ async def get_input_with_inline_menu(
                             include_default_input_processors=True,
                         ),
                         height=Dimension.exact(1),
-                    ),
-                    # Menu area (conditional)
-                    ConditionalContainer(
-                        content=Window(
-                            content=InlineMenuControl(menu),
-                            height=Dimension(max=menu.max_items),
-                            style="",
-                        ),
-                        filter=Condition(lambda: menu.visible),
+                        style="class:input-line",
                     ),
                 ])
             ),
             key_bindings=kb,
             style=Style.from_dict({
                 "": "",
+                "input-separator": "fg:#475569",
+                "input-line": "bg:#020617",
             }),
             mouse_support=False,
         )
 
         # Run the app
-        result = await app.run_async()
+        with patch_stdout(raw=True):
+            result = await app.run_async()
         return result if result else ""
         
     except Exception as e:

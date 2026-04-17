@@ -568,20 +568,22 @@ class ChatSession:
                 full_content = ""
                 
                 if display_output:
-                    with Live(Markdown(""), console=self.console, refresh_per_second=10) as live:
-                        async for line in response.aiter_lines():
-                            if line.startswith("data: "):
-                                data = line[6:]
-                                if data == "[DONE]":
-                                    break
-                                try:
-                                    chunk = json.loads(data)
-                                    delta = chunk["choices"][0]["delta"].get("content", "")
-                                    if delta:
-                                        full_content += delta
-                                        live.update(Markdown(full_content))
-                                except (json.JSONDecodeError, KeyError):
-                                    continue
+                    # Kimi CLI-like streaming: print incremental deltas directly.
+                    # This avoids repeated full-buffer re-render artifacts when input
+                    # prompt is kept active/fixed at the bottom.
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data)
+                                delta = chunk["choices"][0]["delta"].get("content", "")
+                                if delta:
+                                    full_content += delta
+                                    self.console.print(delta, end="")
+                            except (json.JSONDecodeError, KeyError):
+                                continue
                 else:
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
