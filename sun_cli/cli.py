@@ -100,10 +100,9 @@ def get_prompt_plain_text() -> str:
     """Get current user and path info for prompt_toolkit prompt display."""
     try:
         username = os.getenv("USERNAME") or os.getenv("USER") or "user"
-        cwd = os.getcwd()
-        return f"{username}@{cwd}"
+        return f"{username}"
     except Exception:
-        return "user@."
+        return "user"
 
 
 # Command hints data
@@ -115,6 +114,7 @@ QUICK_HINTS = {
         ("/clear", "清除历史"),
         ("/history", "输入历史"),
         ("/new", "新对话"),
+        ("/next", "中断当前并切下一条"),
         ("/plan", "计划模式"),
         ("/tasks", "任务板"),
         ("!cmd", "执行shell"),
@@ -135,9 +135,12 @@ SLASH_COMMANDS = [
     ("/cancel", "取消计划模式", "取消计划模式"),
     ("/tasks", "显示任务板", "显示任务板"),
     ("/task <id> <status>", "更新任务状态", "更新任务状态"),
+    ("/next", "中断当前输出并切换到下一条排队消息", "中断当前输出并切换到下一条排队消息"),
     ("/exit", "退出 Sun CLI", "退出 Sun CLI"),
     ("/quit", "退出 Sun CLI", "退出 Sun CLI"),
 ]
+
+FORCE_NEXT_SIGNAL = "__SUNCLI_FORCE_NEXT__"
 
 
 class SlashCommandCompleter(Completer):
@@ -496,7 +499,7 @@ def _get_bottom_toolbar_text(text: str) -> str:
         return f"<style bg='#1e293b' fg='#94a3b8'> {hints}... </style>"
     
     # Default hint
-    return "<style bg='#1e293b' fg='#64748b'> [?]快捷提示 [/]斜杠命令 [Enter]发送 [Ctrl+C]取消 </style>"
+    return "<style bg='#1e293b' fg='#64748b'> [?]快捷提示 [/]斜杠命令 [Enter]发送 [Ctrl+O]切到下一条 [Ctrl+C]取消 </style>"
 
 
 async def _get_input_with_hints(prompt_info: str) -> str:
@@ -536,8 +539,9 @@ async def get_multiline_input(prompt: str = "You") -> str:
     Real-time hints (when prompt_toolkit is available):
       - Type '?' to see quick command hints in bottom toolbar
       - Type '/' to see slash commands in bottom toolbar
+      - Press Ctrl+O to interrupt current output and switch to next queued message
     """
-    prompt_info = get_prompt_info()
+    prompt_info = get_prompt_plain_text()
     
     try:
         if HAS_PROMPT_TOOLKIT:
@@ -545,6 +549,10 @@ async def get_multiline_input(prompt: str = "You") -> str:
         else:
             line = _get_input_simple(prompt_info)
         
+        # Handle control signal from prompt_toolkit key bindings
+        if line == FORCE_NEXT_SIGNAL:
+            return line
+
         # Handle empty line
         if line == "":
             return ""
@@ -560,21 +568,13 @@ async def get_multiline_input(prompt: str = "You") -> str:
             return ""  # Return empty to continue input loop
         
         # Handle single-line commands - execute immediately
-        single_line_commands = ["exit", "quit", "/quit", "/exit", "/help", "/clear", "/new", "/config"]
+        single_line_commands = ["exit", "quit", "/quit", "/exit", "/help", "/clear", "/new", "/config", "/next"]
         if line.strip().lower() in single_line_commands:
             return line.strip()
         
         # Handle shell commands - execute immediately
         if line.strip().startswith("!"):
             return line.strip()
-        
-        # Display user input with border
-        console.print(Panel(
-            line,
-            title=f"[bold yellow]{prompt}[/bold yellow] - {prompt_info}",
-            border_style="yellow",
-            padding=(0, 1)
-        ))
         
         return line
     except KeyboardInterrupt:
@@ -920,12 +920,44 @@ async def _chat_async() -> None:
     # Interactive loop
     awaiting_plan_input = False
     awaiting_plan_modify = False
+    message_queue: asyncio.Queue[tuple[ChatSession, str]] = asyncio.Queue()
+    worker_state: dict[str, Optional[asyncio.Task]] = {"current_task": None}
+    all_sessions: list[ChatSession] = [session]
+
+    async def _message_worker() -> None:
+        while True:
+            item = await message_queue.get()
+            if item is None:
+                message_queue.task_done()
+                break
+
+            target_session, queued_message = item
+            task = asyncio.create_task(_handle_message(target_session, queued_message))
+            worker_state["current_task"] = task
+            try:
+                await task
+            except asyncio.CancelledError:
+                console.print("[yellow]已中断当前输出，切换到下一条排队消息。[/yellow]")
+            finally:
+                worker_state["current_task"] = None
+                message_queue.task_done()
+
+    worker_task = asyncio.create_task(_message_worker())
 
     try:
         while True:
             try:
                 # Get user input (multiline)
                 user_input = await get_multiline_input()
+
+                # Force switch: interrupt current output and continue with queue
+                if user_input == FORCE_NEXT_SIGNAL or user_input.strip().lower() == "/next":
+                    current_task = worker_state["current_task"]
+                    if current_task and not current_task.done():
+                        current_task.cancel()
+                    else:
+                        console.print("[dim]当前没有正在执行的消息。[/dim]")
+                    continue
                 
                 # Handle empty input
                 if not user_input.strip():
@@ -947,12 +979,14 @@ async def _chat_async() -> None:
                 if awaiting_plan_input and not user_input.startswith("/"):
                     awaiting_plan_input = False
                     session.enter_plan_mode(user_input)
-                    await _handle_message(session, user_input)
+                    await message_queue.put((session, user_input))
+                    console.print(f"[dim]已加入队列，等待执行（队列: {message_queue.qsize()}）。[/dim]")
                     continue
 
                 if awaiting_plan_modify and not user_input.startswith("/"):
                     awaiting_plan_modify = False
-                    await _handle_message(session, f"Please modify the current plan based on this feedback:\n{user_input}")
+                    await message_queue.put((session, f"Please modify the current plan based on this feedback:\n{user_input}"))
+                    console.print(f"[dim]已加入队列，等待执行（队列: {message_queue.qsize()}）。[/dim]")
                     continue
                 
                 # Check for skill intents
@@ -970,6 +1004,7 @@ async def _chat_async() -> None:
                         session.clear_history()
                     elif user_input == "/new":
                         session = ChatSession(console)
+                        all_sessions.append(session)
                         skill_context = SkillContext(console=console, config=cfg, chat_session=session)
                         skill_manager.initialize(skill_context)
                         console.print("[dim]已开始新对话。[/dim]")
@@ -1061,14 +1096,23 @@ async def _chat_async() -> None:
                     continue
                 
                 # Send message to AI
-                await _handle_message(session, user_input)
+                await message_queue.put((session, user_input))
+                if worker_state["current_task"] is not None:
+                    console.print(f"[dim]已加入等待队列（队列: {message_queue.qsize()}）。按 Ctrl+O 或 /next 可切到下一条。[/dim]")
                 
             except KeyboardInterrupt:
                 console.print("\n[dim]Interrupted. Type 'exit' to quit.[/dim]")
             except EOFError:
                 break
     finally:
-        await session.close()
+        await message_queue.join()
+        await message_queue.put(None)
+        await worker_task
+        for s in all_sessions:
+            try:
+                await s.close()
+            except Exception:
+                pass
 
 
 async def _handle_message(session: ChatSession, message: str) -> None:
@@ -1088,6 +1132,13 @@ async def _handle_message(session: ChatSession, message: str) -> None:
         return
     
     try:
+        # Display user input with border
+        console.print(Panel(
+            message,
+            title="[bold green]You[/bold green]",
+            border_style="green"
+        ))
+        
         # Stream response with live display
         await session.stream_message(message)
         console.print()  # Add newline after response
@@ -1104,12 +1155,14 @@ def _show_help(skill_manager) -> None:
   [yellow]/clear[/yellow]       - 清除对话历史
   [yellow]/new[/yellow]         - 开始新对话
   [yellow]/config[/yellow]      - 显示当前配置
+  [yellow]/next[/yellow]        - 中断当前输出并切到下一条排队消息
   [yellow]/tasks[/yellow]       - 显示持久化任务板（.tasks）
   [yellow]/task <id> <status>[/yellow] - 更新任务状态（pending/in_progress/completed）
 
 [bold]快捷提示:[/bold]
   [yellow]?[/yellow]             - 显示快捷命令提示
   [yellow]/[/yellow]             - 显示所有斜杠命令列表
+  [yellow]Ctrl+O[/yellow]        - 中断当前输出并切到下一条排队消息
 
 [bold]配置命令:[/bold]
   配置 API 参数:

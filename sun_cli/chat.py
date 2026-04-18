@@ -618,7 +618,7 @@ class ChatSession:
                 ) as response:
                     if response.status_code == 429:
                         if attempt < retries - 1:
-                            wait_time = (2 ** attempt) * 1  # Exponential backoff
+                            wait_time = (2 ** attempt) * 1
                             self.console.print(f"[yellow]Rate limited. Waiting {wait_time}s before retrying...[/yellow]")
                             await asyncio.sleep(wait_time)
                             continue

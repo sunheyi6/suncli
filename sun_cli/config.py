@@ -4,8 +4,8 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import BaseModel, Field
+import dotenv
 
 
 def get_config_dir() -> Path:
@@ -29,32 +29,41 @@ def get_env_file_path() -> Path:
     return get_config_dir() / ".env"
 
 
-class Config(BaseSettings):
+class Config(BaseModel):
     """Sun CLI configuration."""
-    
-    class Config:
-        env_prefix = "SUN_"
-        env_file = str(get_env_file_path())
-        env_file_encoding = "utf-8"
-    
-    # API Configuration
+
     api_key: str | None = Field(default=None, description="OpenAI API key")
     base_url: str = Field(default="https://api.openai.com/v1", description="API base URL")
     model: str = Field(default="gpt-4o-mini", description="Model to use")
-    
-    # Behavior
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1)
-    
-    # UI
     theme: Literal["dark", "light", "system"] = Field(default="dark")
-    
-    # Behavior - Auto Confirmation (Yolo Mode)
     auto_confirm: bool = Field(default=False, description="Skip all confirmations and execute directly")
     auto_compact: bool = Field(default=True, description="Automatically compact long conversation history")
     compact_trigger_messages: int = Field(default=40, ge=20, description="Trigger compaction when message count exceeds this value")
     compact_keep_recent: int = Field(default=16, ge=8, description="How many recent messages to keep uncompressed")
     show_tool_traces: bool = Field(default=False, description="Show tool execution trace panels in chat")
+
+    @classmethod
+    def from_env(cls) -> "Config":
+        """Load configuration from environment variables."""
+        env_file = get_env_file_path()
+        if env_file.exists():
+            dotenv.load_dotenv(env_file)
+
+        return cls(
+            api_key=os.getenv("SUN_API_KEY"),
+            base_url=os.getenv("SUN_BASE_URL", "https://api.openai.com/v1"),
+            model=os.getenv("SUN_MODEL", "gpt-4o-mini"),
+            temperature=float(os.getenv("SUN_TEMPERATURE", "0.7")),
+            max_tokens=int(os.getenv("SUN_MAX_TOKENS")) if os.getenv("SUN_MAX_TOKENS") else None,
+            theme=os.getenv("SUN_THEME", "dark"),
+            auto_confirm=os.getenv("SUN_AUTO_CONFIRM", "").lower() in ("true", "1", "yes"),
+            auto_compact=os.getenv("SUN_AUTO_COMPACT", "true").lower() in ("true", "1", "yes"),
+            compact_trigger_messages=int(os.getenv("SUN_COMPACT_TRIGGER_MESSAGES", "40")),
+            compact_keep_recent=int(os.getenv("SUN_KEEP_RECENT", "16")),
+            show_tool_traces=os.getenv("SUN_SHOW_TOOL_TRACES", "").lower() in ("true", "1", "yes"),
+        )
     
     @property
     def is_configured(self) -> bool:
@@ -75,7 +84,7 @@ def get_config(reload: bool = False) -> Config:
     """Get or create global config instance."""
     global _config
     if _config is None or reload:
-        _config = Config()
+        _config = Config.from_env()
     return _config
 
 
