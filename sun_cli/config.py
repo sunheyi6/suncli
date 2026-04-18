@@ -21,6 +21,11 @@ def get_config_dir() -> Path:
 
 def get_env_file_path() -> Path:
     """Get the path to the env file."""
+    # Check project directory first
+    project_env = Path(".") / ".env"
+    if project_env.exists():
+        return project_env
+    # Fallback to default config directory
     return get_config_dir() / ".env"
 
 

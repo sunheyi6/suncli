@@ -272,13 +272,10 @@ def build_tools_prompt() -> str:
         "# Available Tools",
         "",
         "You have access to the following tools. When you need to use a tool, "
-        "output the tool call in XML format:",
+        "output the tool call in JSON format:",
         "",
-        "```xml",
-        '<tool name="tool_name">',
-        '  <arg name="param1">value1</arg>',
-        '  <arg name="param2">value2</arg>',
-        "</tool>",
+        "```json",
+        '{"tool": "tool_name", "args": {"param1": "value1", "param2": "value2"}}',
         "```",
         "",
     ]

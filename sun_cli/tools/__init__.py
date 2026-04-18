@@ -165,21 +165,16 @@ def run_bash(command: str, cwd: Optional[str] = None, timeout: int = 60) -> Tool
 
 TOOL_DEFINITIONS = """# Available Tools
 
-You have access to the following tools. When you need to use a tool, output the tool call in one of these formats:
+You have access to the following tools. When you need to use a tool, output the tool call in JSON format:
 
-## Tool Call Formats
+## Tool Call Format
 
-**XML Format (Recommended):**
-```xml
-<tool name="read">
-  <arg name="file_path">test.txt</arg>
-</tool>
-```
-
-**JSON Format:**
+**JSON Format (Required):**
 ```json
 {"tool": "read", "args": {"file_path": "test.txt"}}
 ```
+
+**DO NOT use XML format for tool calls.**
 
 ## Tool Definitions
 

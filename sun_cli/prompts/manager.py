@@ -78,7 +78,7 @@ class PromptManager:
                 prompts.append(f.stem)
         return sorted(prompts)
     
-    def build_system_prompt(self, is_china_mainland: bool = False, tools_prompt: str = "", skills_prompt: str = "") -> str:
+    def build_system_prompt(self, is_china_mainland: bool = False, system_type: str = "Windows", shell_type: str = "PowerShell", tools_prompt: str = "", skills_prompt: str = "") -> str:
         """Build complete system prompt from all prompt files."""
         parts = []
         
@@ -86,6 +86,9 @@ class PromptManager:
         system = self.read_prompt("system")
         if system:
             parts.append(f"# System\n{system}")
+        
+        # Add system and shell information
+        parts.append(f"# System Environment\n**Operating System**: {system_type}\n**Shell**: {shell_type}\n**Region**: {'China Mainland' if is_china_mainland else 'Global'}")
         
         # Add tools definition
         if tools_prompt:
@@ -101,6 +104,8 @@ class PromptManager:
             # Check if user is in China mainland and add Chinese instruction
             if is_china_mainland:
                 identity += "\n\n**Language Preference**: The user is in China mainland. Please respond in Chinese (中文) for better communication."
+            # Add system and shell-specific instructions
+            identity += f"\n\n**System-Specific Guidelines**:\n- When using bash tool, generate commands appropriate for {system_type} {shell_type}\n- For file operations, use {system_type}-compatible paths\n- Be aware of {shell_type} command syntax differences\n- Generate commands that work directly in {shell_type}"
             parts.append(f"# Identity\n{identity}")
         
         # Read user context
@@ -196,6 +201,15 @@ User: "Check what Python files we have and update main.py"
 > Final answer
 ```
 
+## Tool Call Format (IMPORTANT!)
+
+**Use JSON format for tool calls:**
+```json
+{"tool": "read", "args": {"file_path": "test.txt"}}
+```
+
+**DO NOT use XML format for tool calls.**
+
 ## Communication Style
 
 - Use clear, simple language
@@ -233,7 +247,7 @@ def hello():
 - They can execute shell commands with `!` prefix
 - You can suggest commands they might run
 - Be mindful of Windows vs Linux differences
-'''
+''' 
 
 DEFAULT_USER_PROMPT = '''# User Profile
 

@@ -244,6 +244,8 @@ class ChatSession:
     
     def _initialize_system_prompt(self) -> None:
         """Load system prompt with all extensions."""
+        import os
+        import sys
         tools_prompt = build_tools_prompt()
         skills_prompt = self.skill_manager.get_all_system_prompts()
         
@@ -252,9 +254,41 @@ class ChatSession:
         if self.plan_manager.is_active:
             plan_mode_prompt = self.plan_manager.get_system_prompt()
         
+        # Get system type
+        system_type = "Windows" if os.name == "nt" else "Linux/Mac"
+        
+        # Get shell type
+        shell_type = "Unknown"
+        if os.name == "nt":
+            # Windows shell detection
+            if "PSModulePath" in os.environ:
+                shell_type = "PowerShell"
+            elif "COMSPEC" in os.environ and "cmd.exe" in os.environ.get("COMSPEC", ""):
+                shell_type = "CMD"
+            elif "MSYSTEM" in os.environ:
+                shell_type = "Git Bash"
+            else:
+                shell_type = "Windows Shell"
+        else:
+            # Unix-like shell detection
+            if "SHELL" in os.environ:
+                shell_path = os.environ.get("SHELL", "")
+                if "bash" in shell_path:
+                    shell_type = "Bash"
+                elif "zsh" in shell_path:
+                    shell_type = "Zsh"
+                elif "fish" in shell_path:
+                    shell_type = "Fish"
+                else:
+                    shell_type = os.path.basename(shell_path)
+            else:
+                shell_type = "Unix Shell"
+        
         # Build base system prompt
         system_prompt = self.prompt_manager.build_system_prompt(
             self._is_china_mainland, 
+            system_type=system_type,
+            shell_type=shell_type,
             tools_prompt=tools_prompt,
             skills_prompt=skills_prompt
         )
@@ -494,22 +528,22 @@ class ChatSession:
             # Check for background task completions (s13)
             await self._check_background_tasks()
             
-            # Get AI response (only display on first iteration, suppress for tool rounds)
-            should_display = (iteration == 0)
-            full_content = await self._stream_ai_response(display_output=should_display)
+            # Get AI response (only display on first iteration if no tool calls)
+            full_content = await self._stream_ai_response(display_output=False)
             
             # Check for tool calls
             tool_calls = ToolCallParser.parse(full_content)
             
             if not tool_calls:
                 # No tool calls - final response
-                self._try_capture_plan_from_response(full_content)
-                self.conversation.add_message(MessageRole.ASSISTANT, full_content)
-                # Only print if not already displayed during streaming
-                if not should_display:
-                    self.console.print(Markdown(full_content))
+                cleaned_content = self._sanitize_assistant_output(full_content)
+                self._try_capture_plan_from_response(cleaned_content)
+                self.conversation.add_message(MessageRole.ASSISTANT, cleaned_content)
+                # Display the response
+                if cleaned_content:
+                    self.console.print(Markdown(cleaned_content))
                 state["transition_reason"] = None
-                return full_content
+                return cleaned_content
             
             # Execute tool calls
             if iteration > 0 and self.config.show_tool_traces:
@@ -530,10 +564,27 @@ class ChatSession:
         
         # Max iterations reached
         self.console.print(f"[yellow]Max tool iterations ({max_iterations}) reached, generating final response...[/yellow]")
-        final_content = await self._stream_ai_response(display_output=True)
-        self._try_capture_plan_from_response(final_content)
-        self.conversation.add_message(MessageRole.ASSISTANT, final_content)
-        return final_content
+        final_content = await self._stream_ai_response(display_output=False)
+        cleaned_final = self._sanitize_assistant_output(final_content)
+        self._try_capture_plan_from_response(cleaned_final)
+        self.conversation.add_message(MessageRole.ASSISTANT, cleaned_final)
+        if cleaned_final:
+            self.console.print(Markdown(cleaned_final))
+        return cleaned_final
+
+    @staticmethod
+    def _sanitize_assistant_output(content: str) -> str:
+        """Remove raw tool-call payloads from user-facing assistant text."""
+        if not content:
+            return content
+
+        cleaned = ToolCallParser.XML_PATTERN.sub("", content)
+        cleaned = ToolCallParser.JSON_PATTERN.sub("", cleaned)
+
+        # Remove empty code fences left after stripping tool JSON snippets.
+        cleaned = re.sub(r"```(?:json)?\s*```", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
     
     async def _check_scheduled_tasks(self):
         """Check and inject scheduled task notifications (s14)."""
@@ -550,25 +601,49 @@ class ChatSession:
             self.conversation.add_message(MessageRole.USER, text)
     
     async def _stream_ai_response(self, display_output: bool = True) -> str:
-        """Stream AI response."""
-        try:
-            async with self.client.stream(
-                "POST",
-                "/chat/completions",
-                json={
-                    "model": self.config.model,
-                    "messages": self.conversation.to_openai_messages(),
-                    "temperature": self.config.temperature,
-                    "max_tokens": self.config.max_tokens,
-                    "stream": True,
-                },
-            ) as response:
-                response.raise_for_status()
-                
-                full_content = ""
-                
-                if display_output:
-                    with Live(Markdown(""), console=self.console, refresh_per_second=10) as live:
+        """Stream AI response with retry for rate limiting."""
+        retries = 3
+        for attempt in range(retries):
+            try:
+                async with self.client.stream(
+                    "POST",
+                    "/v1/chat/completions",
+                    json={
+                        "model": self.config.model,
+                        "messages": self.conversation.to_openai_messages(),
+                        "temperature": self.config.temperature,
+                        "max_tokens": self.config.max_tokens,
+                        "stream": True,
+                    },
+                ) as response:
+                    if response.status_code == 429:
+                        if attempt < retries - 1:
+                            wait_time = (2 ** attempt) * 1  # Exponential backoff
+                            self.console.print(f"[yellow]Rate limited. Waiting {wait_time}s before retrying...[/yellow]")
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            response.raise_for_status()
+                    response.raise_for_status()
+                    
+                    full_content = ""
+                    
+                    if display_output:
+                        with Live(Markdown(""), console=self.console, refresh_per_second=10) as live:
+                            async for line in response.aiter_lines():
+                                if line.startswith("data: "):
+                                    data = line[6:]
+                                    if data == "[DONE]":
+                                        break
+                                    try:
+                                        chunk = json.loads(data)
+                                        delta = chunk["choices"][0]["delta"].get("content", "")
+                                        if delta:
+                                            full_content += delta
+                                            live.update(Markdown(full_content))
+                                    except (json.JSONDecodeError, KeyError):
+                                        continue
+                    else:
                         async for line in response.aiter_lines():
                             if line.startswith("data: "):
                                 data = line[6:]
@@ -579,32 +654,23 @@ class ChatSession:
                                     delta = chunk["choices"][0]["delta"].get("content", "")
                                     if delta:
                                         full_content += delta
-                                        live.update(Markdown(full_content))
                                 except (json.JSONDecodeError, KeyError):
                                     continue
-                else:
-                    async for line in response.aiter_lines():
-                        if line.startswith("data: "):
-                            data = line[6:]
-                            if data == "[DONE]":
-                                break
-                            try:
-                                chunk = json.loads(data)
-                                delta = chunk["choices"][0]["delta"].get("content", "")
-                                if delta:
-                                    full_content += delta
-                            except (json.JSONDecodeError, KeyError):
-                                continue
-                
-                return full_content
-                
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                self._show_api_error()
-            raise
-        except Exception as e:
-            self.console.print(f"[red]Error: {e}[/red]")
-            raise
+                    
+                    return full_content
+                    
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 401:
+                    self._show_api_error()
+                if e.response.status_code != 429:
+                    raise
+            except Exception as e:
+                self.console.print(f"[red]Error: {e}[/red]")
+                if attempt == retries - 1:
+                    raise
+                wait_time = (2 ** attempt) * 1
+                self.console.print(f"[yellow]Error occurred. Waiting {wait_time}s before retrying...[/yellow]")
+                await asyncio.sleep(wait_time)
     
     async def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> list[str]:
         """Execute tool calls with deduplication and compact progress UI."""
