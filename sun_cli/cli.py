@@ -606,11 +606,25 @@ def main(
         None, "--version", "-v", callback=version_callback, is_eager=True,
         help="Show version information."
     ),
+    debug: bool = typer.Option(
+        False, "--debug", "-d",
+        help="Enable debug mode with detailed logging."
+    ),
 ) -> None:
     """Sun CLI - A Claude-like CLI tool powered by AI.
     
     Run without any command to start interactive chat mode.
     """
+    # Set debug mode if requested - must be done BEFORE any other imports
+    if debug:
+        os.environ["SUN_LOG_LEVEL"] = "DEBUG"
+        console.print("[yellow]Debug mode enabled: Detailed logging will be shown.[/yellow]")
+    
+    # Initialize logging configuration first
+    from .logging_config import get_logger
+    logger = get_logger()
+    logger.debug("Sun CLI 启动中...")
+    
     from .mirror_manager import init_mirrors
     
     # Initialize mirrors (auto-detect China mainland and switch to domestic mirrors)

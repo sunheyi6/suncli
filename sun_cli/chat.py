@@ -27,6 +27,15 @@ from .skills.prompt import PromptSkill
 from .skills.config import ConfigSkill
 from .plan_mode import PlanModeManager, PlanMode
 from .context_collector import get_context_collector
+from .logging_config import get_logger
+
+# Cached lazy logger to ensure SUN_LOG_LEVEL is set before first call
+_cached_logger = None
+def _get_logger():
+    global _cached_logger
+    if _cached_logger is None:
+        _cached_logger = get_logger(__name__)
+    return _cached_logger
 
 # s04: Subagent
 from .subagent import run_subagent
@@ -322,6 +331,8 @@ class ChatSession:
             system_prompt = f"{system_prompt}\n\n{plan_mode_prompt}"
         
         if system_prompt:
+            _get_logger().debug(f"系统提示词构建完成，长度: {len(system_prompt)} 字符")
+            _get_logger().debug(f"系统提示词内容: {system_prompt[:1000]}...")
             self.conversation.add_message(MessageRole.SYSTEM, system_prompt)
     
     # ========== s04: Subagent ==========
@@ -518,6 +529,7 @@ class ChatSession:
         
         for iteration in range(max_iterations):
             state["turn_count"] = iteration + 1
+            _get_logger().debug(f"开始第 {state['turn_count']} 轮工具调用循环")
             
             # s06: Micro-compact before each call
             self._micro_compact()
@@ -529,13 +541,19 @@ class ChatSession:
             await self._check_background_tasks()
             
             # Get AI response (only display on first iteration if no tool calls)
+            _get_logger().debug("正在获取AI响应...")
             full_content = await self._stream_ai_response(display_output=False)
-            
+            _get_logger().debug(f"AI响应内容: {full_content[:200]}...")
+
             # Check for tool calls
             tool_calls = ToolCallParser.parse(full_content)
+            _get_logger().debug(f"解析到 {len(tool_calls)} 个工具调用")
+            for i, call in enumerate(tool_calls):
+                _get_logger().debug(f"工具调用 {i+1}: {call.name} - {call.args}")
             
             if not tool_calls:
                 # No tool calls - final response
+                _get_logger().debug("无工具调用，返回最终响应")
                 cleaned_content = self._sanitize_assistant_output(full_content)
                 self._try_capture_plan_from_response(cleaned_content)
                 self.conversation.add_message(MessageRole.ASSISTANT, cleaned_content)
@@ -549,13 +567,16 @@ class ChatSession:
             if iteration > 0 and self.config.show_tool_traces:
                 self.console.print(f"\n[dim][Analyzing... {iteration + 1}/{max_iterations}][/dim]")
             
+            _get_logger().debug("开始执行工具调用")
             tool_results = await self._execute_tool_calls(tool_calls)
+            _get_logger().debug(f"工具执行完成，获得 {len(tool_results)} 个结果")
             
             # Add assistant message
             self.conversation.add_message(MessageRole.ASSISTANT, full_content)
             
             # Add tool results
             tool_result_blocks = self._build_tool_result_blocks(tool_calls, tool_results)
+            _get_logger().debug(f"构建工具结果块: {json.dumps(tool_result_blocks, ensure_ascii=False)[:200]}...")
             self.conversation.add_message(
                 MessageRole.USER,
                 json.dumps(tool_result_blocks, ensure_ascii=False)
@@ -605,20 +626,36 @@ class ChatSession:
         retries = 3
         for attempt in range(retries):
             try:
+                openai_messages = self.conversation.to_openai_messages()
+                _get_logger().debug(f"第 {attempt+1}/{retries} 次尝试调用AI API")
+                _get_logger().debug(f"模型: {self.config.model}")
+                _get_logger().debug(f"基础URL: {self.config.base_url}")
+                _get_logger().debug(f"发送给大模型的消息数量: {len(openai_messages)}")
+                
+                # 记录最后一条用户消息
+                for i, msg in enumerate(openai_messages):
+                    if msg['role'] == 'user':
+                        _get_logger().debug(f"用户消息 {i}: {msg['content'][:500]}...")
+                    elif msg['role'] == 'assistant' and i == len(openai_messages) - 1:
+                        _get_logger().debug(f"助手消息 {i}: {msg['content'][:500]}...")
+                
                 async with self.client.stream(
                     "POST",
                     "/v1/chat/completions",
                     json={
                         "model": self.config.model,
-                        "messages": self.conversation.to_openai_messages(),
+                        "messages": openai_messages,
                         "temperature": self.config.temperature,
                         "max_tokens": self.config.max_tokens,
                         "stream": True,
                     },
                 ) as response:
+                    _get_logger().debug(f"API响应状态码: {response.status_code}")
+                    
                     if response.status_code == 429:
                         if attempt < retries - 1:
                             wait_time = (2 ** attempt) * 1
+                            _get_logger().warning(f"速率限制，等待 {wait_time} 秒后重试")
                             self.console.print(f"[yellow]Rate limited. Waiting {wait_time}s before retrying...[/yellow]")
                             await asyncio.sleep(wait_time)
                             continue
@@ -629,11 +666,13 @@ class ChatSession:
                     full_content = ""
                     
                     if display_output:
+                        _get_logger().debug("开始流式输出AI响应")
                         with Live(Markdown(""), console=self.console, refresh_per_second=10) as live:
                             async for line in response.aiter_lines():
                                 if line.startswith("data: "):
                                     data = line[6:]
                                     if data == "[DONE]":
+                                        _get_logger().debug("AI响应流结束")
                                         break
                                     try:
                                         chunk = json.loads(data)
@@ -644,10 +683,12 @@ class ChatSession:
                                     except (json.JSONDecodeError, KeyError):
                                         continue
                     else:
+                        _get_logger().debug("获取AI响应（非流式）")
                         async for line in response.aiter_lines():
                             if line.startswith("data: "):
                                 data = line[6:]
                                 if data == "[DONE]":
+                                    _get_logger().debug("AI响应流结束")
                                     break
                                 try:
                                     chunk = json.loads(data)
@@ -657,6 +698,7 @@ class ChatSession:
                                 except (json.JSONDecodeError, KeyError):
                                     continue
                     
+                    _get_logger().debug(f"AI响应获取完成，长度: {len(full_content)} 字符")
                     return full_content
                     
             except httpx.HTTPStatusError as e:
@@ -686,6 +728,7 @@ class ChatSession:
                 cache_key = (call.name, args_key)
 
                 if cache_key in executed:
+                    _get_logger().debug(f"工具调用缓存命中: {call.name} - {call.args}")
                     progress_items.append({
                         "status": "success",
                         "text": f"{self._format_tool_call_label(call)} (cached)",
@@ -694,6 +737,9 @@ class ChatSession:
                     live.update(self._render_tool_progress(progress_items))
                     continue
 
+                _get_logger().debug(f"开始执行工具: {call.name}")
+                _get_logger().debug(f"工具参数: {call.args}")
+                
                 item = {
                     "status": "running",
                     "text": self._format_tool_call_label(call),
@@ -709,10 +755,14 @@ class ChatSession:
                     await asyncio.sleep(0.08)
 
                 result = await exec_task
+                _get_logger().debug(f"工具执行完成: {call.name}")
+                _get_logger().debug(f"工具执行结果: {result[:100]}...")
+                
                 executed[cache_key] = result
                 results.append(result)
 
                 if result.strip().lower().startswith("error"):
+                    _get_logger().warning(f"工具执行错误: {result}")
                     item["status"] = "error"
                     item["text"] = f"{item['text']} - {self._short_error(result)}"
                 else:
@@ -720,6 +770,7 @@ class ChatSession:
 
                 live.update(self._render_tool_progress(progress_items))
 
+        _get_logger().debug(f"所有工具调用执行完成，共 {len(results)} 个结果")
         return results
 
     def _format_tool_call_label(self, call: ToolCall) -> str:
