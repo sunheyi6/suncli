@@ -1011,28 +1011,70 @@ def prompt(
     console.print("\n[dim]Use [cyan]--list[/cyan] to see all prompts, [cyan]--edit <name>[/cyan] to edit[/dim]")
 
 
+def _clear_api_config() -> None:
+    """Clear corrupted API configuration files."""
+    from .config import get_api_config_file_path, get_env_file_path
+    
+    # Remove .api_config file
+    api_file = get_api_config_file_path()
+    if api_file.exists():
+        api_file.unlink()
+    
+    # Clean API-related lines from .env file
+    env_file = get_env_file_path()
+    if env_file.exists():
+        content = env_file.read_text(encoding="utf-8")
+        lines = content.split("\n")
+        cleaned = [
+            line for line in lines
+            if not any(line.startswith(f"{var}=") for var in ("SUN_API_KEY", "SUN_BASE_URL", "SUN_MODEL"))
+        ]
+        while cleaned and cleaned[-1].strip() == "":
+            cleaned.pop()
+        env_file.write_text("\n".join(cleaned) + "\n", encoding="utf-8")
+
+
 async def _chat_async() -> None:
     """Async chat handler - main interactive mode."""
     cfg = get_config()
     
-    # Check if configured
+    # Check if configured - if not, enter interactive setup directly
     if not cfg.is_configured:
         console.print(Panel(
-            "[bold red]API Key Not Configured[/bold red]\n\n"
-            "Please set your OpenAI API key:\n"
-            "  [cyan]sun config --api-key <your-key>[/cyan]\n\n"
-            "Or set environment variable:\n"
-            "  [cyan]export SUN_API_KEY=<your-key>[/cyan]",
-            border_style="red"
+            "[bold yellow]欢迎使用 Sun CLI[/bold yellow]\n\n"
+            "您尚未配置 API，请先选择模型并输入 API Key。",
+            title="首次配置",
+            border_style="yellow"
         ))
-        raise typer.Exit(1)
+        _interactive_model_setup()
+        cfg = get_config(reload=True)
+        if not cfg.is_configured:
+            console.print("[red]配置未完成，程序退出。[/red]")
+            raise typer.Exit(1)
     
     # Create chat session
     try:
         session = ChatSession(console)
     except RuntimeError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        err_msg = str(e)
+        # If API key contains non-ASCII chars, auto-clear and enter interactive setup
+        if "non-ASCII" in err_msg or "CJK" in err_msg:
+            console.print(Panel(
+                "[bold yellow]API Key 包含非法字符，配置已损坏[/bold yellow]\n\n"
+                "已自动清除损坏的配置，请重新配置。",
+                title="配置错误",
+                border_style="yellow"
+            ))
+            _clear_api_config()
+            _interactive_model_setup()
+            cfg = get_config(reload=True)
+            if not cfg.is_configured:
+                console.print("[red]配置未完成，程序退出。[/red]")
+                raise typer.Exit(1)
+            session = ChatSession(console)
+        else:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(1)
     
     # Initialize skill manager with context
     skill_manager = get_skill_manager()

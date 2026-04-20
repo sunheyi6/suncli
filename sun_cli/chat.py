@@ -95,10 +95,24 @@ class ChatSession:
                 "or set SUN_API_KEY environment variable."
             )
         
+        # Validate API key: HTTP headers must be ASCII
+        api_key = self.config.api_key
+        try:
+            api_key.encode("ascii")
+        except UnicodeEncodeError:
+            raise RuntimeError(
+                f"API key contains non-ASCII characters (e.g. emoji or CJK).\n"
+                f"Current key starts with: {api_key[:20]!r}\n"
+                f"Please reconfigure with a valid key:\n"
+                f"  suncli config --api-key <your-valid-key>\n"
+                f"Or use interactive setup:\n"
+                f"  suncli models --setup"
+            )
+        
         self.client = httpx.AsyncClient(
             base_url=self.config.base_url,
             headers={
-                "Authorization": f"Bearer {self.config.api_key}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             timeout=120.0,
@@ -166,7 +180,105 @@ class ChatSession:
         self.tool_executor.register_handler("load_memory", self._handle_load_memory)
     
     # ========== Web Search ==========
-    
+
+    def _is_kimi_model(self) -> bool:
+        """Check if current model is a Kimi/Moonshot model."""
+        model = (self.config.model or "").lower()
+        base_url = (self.config.base_url or "").lower()
+        return model.startswith("kimi-") or "moonshot" in base_url
+
+    async def _do_kimi_web_search(self, query: str) -> str:
+        """Use Kimi's native $web_search builtin tool via API.
+
+        Reference: https://platform.kimi.ai/docs/guide/use-web-search
+        """
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": "You are Kimi, an AI assistant."},
+            {"role": "user", "content": query},
+        ]
+
+        tools_payload = [
+            {
+                "type": "builtin_function",
+                "function": {"name": "$web_search"},
+            }
+        ]
+
+        try:
+            # Round 1: Ask Kimi to search
+            resp = await self.client.post(
+                "/chat/completions",
+                json={
+                    "model": self.config.model,
+                    "messages": messages,
+                    "tools": tools_payload,
+                    "thinking": {"type": "disabled"},
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            choice = data["choices"][0]
+
+            # If no tool_calls, return the direct response
+            if choice.get("finish_reason") != "tool_calls":
+                return choice["message"].get("content", "")
+
+            # Append assistant message (with tool_calls)
+            msg = choice["message"]
+            assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": msg.get("content", ""),
+                "tool_calls": [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": tc["function"]["arguments"],
+                        },
+                    }
+                    for tc in msg.get("tool_calls", [])
+                ],
+            }
+            messages.append(assistant_msg)
+
+            # Replay each tool_call result verbatim
+            for tc in msg.get("tool_calls", []):
+                tc_name = tc["function"]["name"]
+                tc_args = tc["function"]["arguments"]
+                if tc_name == "$web_search":
+                    # For Kimi builtin $web_search, just echo arguments back
+                    try:
+                        tool_result = json.loads(tc_args)
+                    except json.JSONDecodeError:
+                        tool_result = tc_args
+                else:
+                    tool_result = f"Error: unknown tool '{tc_name}'"
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "name": tc_name,
+                    "content": json.dumps(tool_result, ensure_ascii=False),
+                })
+
+            # Round 2: Get final answer with search results
+            resp2 = await self.client.post(
+                "/chat/completions",
+                json={
+                    "model": self.config.model,
+                    "messages": messages,
+                    "tools": tools_payload,
+                    "thinking": {"type": "disabled"},
+                },
+            )
+            resp2.raise_for_status()
+            data2 = resp2.json()
+            return data2["choices"][0]["message"].get("content", "")
+
+        except Exception as e:
+            return f"Kimi web search failed: {str(e)}"
+
     async def _do_web_search(self, query: str, max_results: int = 5) -> str:
         """Async implementation of web search."""
         normalized = (query or "").strip()
@@ -180,16 +292,20 @@ class ChatSession:
             location = self._extract_weather_location(normalized)
             return await self._do_weather_now(location=location)
 
+        # Use Kimi native $web_search when on Kimi models
+        if self._is_kimi_model():
+            return await self._do_kimi_web_search(normalized)
+
         from .tools.web_search import DuckDuckGoSearch
-        
+
         searcher = DuckDuckGoSearch()
         try:
             results = await searcher.search(normalized, max(1, min(10, int(max_results) if max_results else 5)))
             await searcher.close()
-            
+
             if not results:
                 return "No results found. Try a different query."
-            
+
             lines = [f"Search results for: '{query}'\n"]
             for i, result in enumerate(results, 1):
                 lines.append(f"{i}. {result.title}")
@@ -199,7 +315,7 @@ class ChatSession:
                     snippet = result.body[:200] + "..." if len(result.body) > 200 else result.body
                     lines.append(f"   {snippet}")
                 lines.append("")
-            
+
             return "\n".join(lines)
         except Exception as e:
             await searcher.close()
