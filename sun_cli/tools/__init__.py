@@ -42,15 +42,34 @@ def read_file(file_path: str, limit: int = None, offset: int = None) -> ToolResu
                 )
             )
         if path.is_dir():
-            return ToolResult(
-                success=False,
-                content="",
-                error=(
-                    f"Path is a directory, not a file: {file_path}.\n"
-                    f"Correction: Use `bash` tool to list directory contents. "
-                    f"The `read` tool ONLY accepts file paths, NEVER directories."
+            # Auto-list directory contents instead of erroring
+            try:
+                entries = []
+                for item in sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+                    prefix = "[DIR] " if item.is_dir() else "[FILE]"
+                    size = item.stat().st_size if item.is_file() else 0
+                    entries.append(f"{prefix} {item.name}" + (f" ({size} bytes)" if item.is_file() else ""))
+                
+                listing = "\n".join(entries) if entries else "(empty directory)"
+                return ToolResult(
+                    success=True,
+                    content=(
+                        f"[Directory listing: {file_path}]\n"
+                        f"Note: This is a directory, not a file. "
+                        f"Below are its contents. Use `read` on a specific file path.\n\n"
+                        f"{listing}"
+                    )
                 )
-            )
+            except Exception as e:
+                return ToolResult(
+                    success=False,
+                    content="",
+                    error=(
+                        f"Path is a directory and could not be listed: {file_path}.\n"
+                        f"Error: {e}\n"
+                        f"Correction: Use `bash` tool to list directory contents."
+                    )
+                )
         
         content = path.read_text(encoding="utf-8")
         lines = content.splitlines()

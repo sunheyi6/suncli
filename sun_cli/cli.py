@@ -1038,12 +1038,12 @@ async def _chat_async() -> None:
     """Async chat handler - main interactive mode."""
     cfg = get_config()
     
-    # Check if configured - if not, enter interactive setup directly
+    # Check if configured - if not, enter interactive setup automatically
     if not cfg.is_configured:
         console.print(Panel(
             "[bold yellow]欢迎使用 Sun CLI[/bold yellow]\n\n"
-            "您尚未配置 API，请先选择模型并输入 API Key。",
-            title="首次配置",
+            "检测到尚未配置 API，即将进入交互式配置...",
+            title="首次启动",
             border_style="yellow"
         ))
         _interactive_model_setup()
@@ -1061,7 +1061,7 @@ async def _chat_async() -> None:
         if "non-ASCII" in err_msg or "CJK" in err_msg:
             console.print(Panel(
                 "[bold yellow]API Key 包含非法字符，配置已损坏[/bold yellow]\n\n"
-                "已自动清除损坏的配置，请重新配置。",
+                "已自动清除损坏的配置，即将进入交互式配置...",
                 title="配置错误",
                 border_style="yellow"
             ))

@@ -126,21 +126,10 @@ DEFAULT_SYSTEM_PROMPT = '''# AGENTS.md - Your Workspace
 
 This folder is home. Treat it that way.
 
-## First Run
+## Context
 
-Before starting, read these files in order:
-1. `identity.md` -- this is who you are
-2. `user.md` -- this is who you're helping
-3. `memory.md` -- your accumulated memories
-
-## Every Session
-
-Before doing anything else:
-1. Read `identity.md` -- your core personality
-2. Read `user.md` -- understand your user
-3. Check `memory.md` for important context
-
-Don't ask permission. Just do it.
+Your system prompt, identity, user profile, and memories are already loaded above.
+You do NOT need to read `identity.md`, `user.md`, or `memory.md` manually.
 
 ## Memory
 
