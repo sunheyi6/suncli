@@ -69,7 +69,36 @@ MODEL_PRESETS: dict[str, list[ModelPreset]] = {
             pricing="Free tier available"
         ),
     ],
-    "Kimi (Moonshot)": [
+    "Kimi 国际平台 (platform.kimi.ai)": [
+        ModelPreset(
+            name="Kimi K2.5",
+            provider="Kimi",
+            model_id="kimi-k2.5",
+            base_url="https://api.moonshot.ai/v1",
+            description="Flagship model, agentic & multimodal",
+            context_length="256K",
+            pricing="$0.6/1M input, $3/1M output"
+        ),
+        ModelPreset(
+            name="Kimi K2 Thinking",
+            provider="Kimi",
+            model_id="kimi-k2-thinking",
+            base_url="https://api.moonshot.ai/v1",
+            description="Extended reasoning capabilities",
+            context_length="256K",
+            pricing="$0.6/1M input, $3/1M output"
+        ),
+        ModelPreset(
+            name="Kimi K2",
+            provider="Kimi",
+            model_id="kimi-k2",
+            base_url="https://api.moonshot.ai/v1",
+            description="Base K2 model",
+            context_length="256K",
+            pricing="$0.6/1M input, $2.5/1M output"
+        ),
+    ],
+    "Kimi 国内平台 (platform.kimi.com)": [
         ModelPreset(
             name="Moonshot-v1-128k",
             provider="Kimi",
@@ -86,6 +115,15 @@ MODEL_PRESETS: dict[str, list[ModelPreset]] = {
             base_url="https://api.moonshot.cn/v1",
             description="Fast response",
             context_length="32K",
+            pricing="¥12/1M tokens"
+        ),
+        ModelPreset(
+            name="Moonshot-v1-8k",
+            provider="Kimi",
+            model_id="moonshot-v1-8k",
+            base_url="https://api.moonshot.cn/v1",
+            description="Standard context",
+            context_length="8K",
             pricing="¥12/1M tokens"
         ),
     ],

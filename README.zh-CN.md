@@ -44,6 +44,10 @@ pip install .
    
    **Kimi API（Moonshot）：**
    ```bash
+   # Kimi K2.5（国际平台 platform.kimi.ai）
+   suncli config --api-key <your-kimi-api-key> --base-url https://api.moonshot.ai/v1 --model kimi-k2.5
+
+   # Moonshot v1（国内平台 platform.kimi.com）
    suncli config --api-key <your-kimi-api-key> --base-url https://api.moonshot.cn/v1 --model moonshot-v1-128k
    ```
    
@@ -319,14 +323,22 @@ You: !python script.py       # 运行 Python 脚本
 
 ### Kimi API（Moonshot）配置
 
+> ⚠️ **重要**：Moonshot 有两个独立的平台，账号和 API Key 不互通！
+
+**国际平台（platform.kimi.ai）— 支持 K2.5：**
+```bash
+suncli config --api-key sk-xxx --base-url https://api.moonshot.ai/v1 --model kimi-k2.5
+```
+
+**国内平台（platform.kimi.com）— 仅支持 v1 系列：**
 ```bash
 suncli config --api-key sk-xxx --base-url https://api.moonshot.cn/v1 --model moonshot-v1-128k
 ```
 
-可用的 Kimi 模型：
-- `moonshot-v1-8k` - 8K 上下文
-- `moonshot-v1-32k` - 32K 上下文
-- `moonshot-v1-128k` - 128K 上下文（推荐）
+| 平台 | Base URL | 可用模型 |
+|------|----------|---------|
+| 国际平台 | `https://api.moonshot.ai/v1` | `kimi-k2.5`、`kimi-k2-thinking`、`kimi-k2` |
+| 国内平台 | `https://api.moonshot.cn/v1` | `moonshot-v1-8k/32k/128k`、`kimi-k2-turbo-preview` |
 
 ### OpenAI API 配置
 

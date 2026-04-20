@@ -1,6 +1,7 @@
 """Main CLI entry point for Sun CLI."""
 
 import asyncio
+import getpass
 import os
 import re
 from typing import Iterable, Optional
@@ -744,6 +745,108 @@ def config(
         console.print("[yellow]Use --help to see available options[/yellow]")
 
 
+def _interactive_model_setup() -> None:
+    """Interactive model selection and API key configuration."""
+    from .models_presets import MODEL_PRESETS
+
+    providers = get_provider_names()
+
+    # Step 1: Show all providers
+    console.print(Panel.fit(
+        "[bold]请选择模型提供商[/bold]\n",
+        title="模型配置",
+        border_style="blue"
+    ))
+
+    for idx, provider_name in enumerate(providers, 1):
+        console.print(f"  [cyan]{idx}.[/cyan] {provider_name}")
+
+    # Get provider selection
+    while True:
+        choice = Prompt.ask("\n请输入编号选择提供商", default="1")
+        try:
+            provider_idx = int(choice) - 1
+            if 0 <= provider_idx < len(providers):
+                selected_provider = providers[provider_idx]
+                break
+            else:
+                console.print("[red]无效的编号，请重新输入[/red]")
+        except ValueError:
+            console.print("[red]请输入数字编号[/red]")
+
+    # Step 2: Show models for selected provider
+    provider_presets = MODEL_PRESETS.get(selected_provider, [])
+    if not provider_presets:
+        console.print(f"[red]提供商 '{selected_provider}' 没有可用模型[/red]")
+        return
+
+    console.print(Panel.fit(
+        f"[bold]{selected_provider}[/bold] - 可用模型\n",
+        title="选择模型",
+        border_style="blue"
+    ))
+
+    for idx, preset in enumerate(provider_presets, 1):
+        console.print(f"  [cyan]{idx}.[/cyan] [green]{preset.name}[/green]")
+        console.print(f"     [dim]模型 ID:[/dim] [yellow]{preset.model_id}[/yellow]")
+        console.print(f"     [dim]上下文:[/dim] {preset.context_length}  [dim]价格:[/dim] {preset.pricing}")
+        console.print()
+
+    # Get model selection
+    while True:
+        choice = Prompt.ask("请输入编号选择模型", default="1")
+        try:
+            model_idx = int(choice) - 1
+            if 0 <= model_idx < len(provider_presets):
+                selected_preset = provider_presets[model_idx]
+                break
+            else:
+                console.print("[red]无效的编号，请重新输入[/red]")
+        except ValueError:
+            console.print("[red]请输入数字编号[/red]")
+
+    # Step 3: Input API Key
+    console.print(Panel.fit(
+        f"[bold]配置 {selected_preset.name}[/bold]\n"
+        f"Base URL: [cyan]{selected_preset.base_url}[/cyan]\n"
+        f"Model ID: [cyan]{selected_preset.model_id}[/cyan]\n",
+        title="API 配置",
+        border_style="blue"
+    ))
+
+    console.print("[yellow]提示:[/yellow] 输入 API Key 时不会显示字符（安全输入）")
+    api_key = getpass.getpass("请输入 API Key: ").strip()
+
+    if not api_key:
+        console.print("[red]API Key 不能为空，配置已取消[/red]")
+        return
+
+    # Save config
+    update_config(api_key=api_key, base_url=selected_preset.base_url, model=selected_preset.model_id)
+    console.print("[green][OK][/green] 配置已保存！")
+
+    # Test connection
+    console.print("[dim]正在测试 API 连接...[/dim]")
+    from .config import test_api_connection
+    cfg = get_config(reload=True)
+    success, msg = test_api_connection(cfg)
+    if success:
+        console.print(Panel.fit(
+            f"[bold green]API 连接成功！[/bold green]\n\n"
+            f"模型: [cyan]{selected_preset.name}[/cyan]\n"
+            f"提供商: [cyan]{selected_preset.provider}[/cyan]",
+            title="配置完成",
+            border_style="green"
+        ))
+    else:
+        console.print(Panel(
+            f"[bold yellow]API 连接测试未通过[/bold yellow]\n\n"
+            f"{msg}\n\n"
+            f"[dim]请检查 API Key 是否正确，或确认 Key 与平台是否匹配。[/dim]",
+            title="[yellow]配置警告[/yellow]",
+            border_style="yellow"
+        ))
+
 @app.command()
 def models(
     list: bool = typer.Option(
@@ -755,21 +858,28 @@ def models(
     set_model: Optional[str] = typer.Option(
         None, "--set", "-s", help="Set model by preset name or model ID"
     ),
+    setup: bool = typer.Option(
+        False, "--setup", help="Interactive setup: choose model and enter API key"
+    ),
 ) -> None:
     """Manage model presets."""
     cfg = get_config()
-    
+
+    if setup:
+        _interactive_model_setup()
+        return
+
     if set_model:
         # Try to find preset by name or model ID
         preset = get_preset_by_model_id(set_model)
-        
+
         if not preset:
             # Try to find by name
             for p in get_all_presets():
                 if p.name.lower() == set_model.lower():
                     preset = p
                     break
-        
+
         if preset:
             update_config(model=preset.model_id, base_url=preset.base_url)
             console.print(Panel.fit(
@@ -787,7 +897,7 @@ def models(
             console.print(f"[red]Model preset not found: {set_model}[/red]")
             console.print("[dim]Use --list to see available presets[/dim]")
         return
-    
+
     # List models
     if provider:
         presets = get_presets_by_provider(provider)
@@ -797,17 +907,17 @@ def models(
             return
     else:
         presets = get_all_presets()
-    
+
     # Display models
     from rich.table import Table
-    
+
     table = Table(show_header=True, header_style="bold magenta", border_style="cyan")
     table.add_column("Provider", style="cyan", width=15)
     table.add_column("Name", style="green", width=20)
     table.add_column("Model ID", style="yellow", width=25)
     table.add_column("Context", style="blue", width=8)
     table.add_column("Pricing", style="dim", width=20)
-    
+
     for preset in presets:
         table.add_row(
             preset.provider,
@@ -816,9 +926,9 @@ def models(
             preset.context_length,
             preset.pricing,
         )
-    
+
     console.print(table)
-    
+
     # Show current model
     current_preset = get_preset_by_model_id(cfg.model)
     if current_preset:
