@@ -267,44 +267,79 @@ def get_tool_schemas() -> list[dict]:
 
 
 def build_tools_prompt() -> str:
-    """Build the tools section of system prompt."""
+    """Build the tools section of system prompt with strict constraints."""
     lines = [
         "# Available Tools",
         "",
-        "You have access to the following tools. When you need to use a tool, "
-        "output the tool call in JSON format:",
+        "## CRITICAL: Tool Call Format Rules (STRICT)",
+        "",
+        "When you need to use a tool, you MUST output ONLY the tool call JSON. "
+        "Do NOT output natural language explanations, apologies, or transitional phrases before or after the tool call.",
+        "",
+        "**Correct:**",
+        "```json",
+        '{"tool": "read", "args": {"file_path": "src/main.py"}}',
+        "```",
+        "",
+        "**Wrong (DO NOT DO THIS):**",
+        "```",
+        'Sure, let me read the file for you.',  # 自然语言废话 - 禁止
+        '{"tool": "read", "args": {"file_path": "src/main.py"}}',
+        "```",
+        "",
+        "**Rule**: If you need to call a tool, output ONLY the JSON. No '我先看看', '让我为你', 'Sure, I will' etc.",
+        "",
+        "## Tool Call Format",
         "",
         "```json",
         '{"tool": "tool_name", "args": {"param1": "value1", "param2": "value2"}}',
         "```",
         "",
     ]
-    
+
     for tool in ALL_TOOLS:
         lines.append(tool.to_prompt_text())
         lines.append("")
-        
+
     lines.extend([
+        "## Tool Responsibility Separation (CRITICAL)",
+        "",
+        "### read tool",
+        "- **ONLY for reading files**. The file_path MUST point to an existing file.",
+        "- **NEVER pass a directory to read**. If you need to see what's in a directory, use `bash` instead.",
+        "- If the file does not exist, the system will return an error. Do NOT guess file paths.",
+        "",
+        "### bash tool",
+        "- Use for: listing directory contents, git operations, running tests, searching files.",
+        "- For directory listings: use `bash` with `ls -la` (Linux/Mac) or `Get-ChildItem` (Windows).",
+        "- For finding files: use `bash` with `find` or `glob` patterns.",
+        "",
+        "## Path Integrity Rules (CRITICAL)",
+        "",
+        "1. **NEVER invent file paths**. Only use paths that have been confirmed to exist by previous `bash` or `read` results.",
+        "2. **If unsure about a path**, call `bash` first to list the directory and confirm.",
+        "3. **Before reading a file**, ensure you know its exact path from prior tool results, not from memory or guess.",
+        "4. **Do NOT assume project structure**. Always verify with `bash` if you haven't seen the structure yet.",
+        "",
         "## Multi-Round Tool Calling",
         "",
-        "You can call tools MULTIPLE TIMES in sequence! The system supports iterative tool calling:",
+        "You can call tools MULTIPLE TIMES in sequence. Workflow:",
         "1. Analyze the user's request",
-        "2. Call tools to gather information",
+        "2. Call tools to gather information (ONLY JSON output, no natural language)",
         "3. Receive tool results",
-        "4. Call MORE tools if needed",
+        "4. Call MORE tools if needed (ONLY JSON output)",
         "5. Repeat until you have all information",
         "6. Finally, provide your answer WITHOUT tool calls",
         "",
         "## Tool Usage Guidelines",
         "",
-        "1. **Always read first**: Use `read` to understand existing code",
+        "1. **Always verify paths first**: Use `bash` to list directories before reading files in unknown projects",
         "2. **Be precise with edit**: old_str must match exactly",
         "3. **Multi-step tasks**: Break complex tasks into multiple tool calls",
         "4. **Verify results**: After editing, read the file again",
-        "5. **Use bash wisely**: For git operations, tests, file listing",
-        "6. **Handle errors**: If a tool fails, analyze and try alternatives",
-        "7. **Weather questions**: For weather/current conditions, use `weather_now` first and avoid guessing",
+        "5. **Handle errors**: If a tool fails, analyze the error message and follow the correction hint provided",
+        "6. **Weather questions**: For weather/current conditions, use `weather_now` first and avoid guessing",
         "",
     ])
-    
+
     return "\n".join(lines)

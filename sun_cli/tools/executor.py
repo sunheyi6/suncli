@@ -153,7 +153,7 @@ class ToolExecutor:
                     return result.content if result.success else f"Error: {result.error}"
                 return str(result)
             except Exception as e:
-                return f"Error executing {call.name}: {str(e)}"
+                return f"Error executing {call.name}: {str(e)}\nCorrection: Check tool arguments match the schema and try again."
         
         # Check native tools
         if call.name in self.NATIVE_TOOLS:
@@ -167,7 +167,11 @@ class ToolExecutor:
                 return f"Error executing tool: {str(e)}"
         
         # Unknown tool
-        return f"Error: Unknown tool '{call.name}'"
+        return (
+            f"Error: Unknown tool '{call.name}'. "
+            f"Available tools: {', '.join(list(self.NATIVE_TOOLS.keys()) + list(self._handlers.keys()))}. "
+            f"Correction: Use an exact tool name from the available list."
+        )
     
     def execute_all(self, calls: list[ToolCall]) -> list[str]:
         """Execute multiple tool calls.
@@ -193,14 +197,21 @@ class ToolExecutor:
         tool_func = cls.NATIVE_TOOLS.get(call.name)
         
         if not tool_func:
-            return f"Error: Unknown tool '{call.name}'. Available: {list(cls.NATIVE_TOOLS.keys())}"
-        
+            return (
+                f"Error: Unknown tool '{call.name}'. "
+                f"Available: {', '.join(list(cls.NATIVE_TOOLS.keys()))}. "
+                f"Correction: Use an exact tool name from the available list."
+            )
+
         try:
             result = tool_func(**call.args)
-            
+
             if result.success:
                 return result.content
             else:
                 return f"Error: {result.error}"
         except Exception as e:
-            return f"Error executing tool: {str(e)}"
+            return (
+                f"Error executing tool: {str(e)}\n"
+                f"Correction: Check tool arguments match the schema and try again."
+            )

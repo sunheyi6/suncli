@@ -35,5 +35,6 @@ ENV/
 
 # Project specific
 .env
+.api_config
 config.json
 chat_history/

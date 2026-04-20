@@ -2,9 +2,12 @@
 
 import asyncio
 import json
+import os
 import uuid
 import re
+import time
 from typing import Any, Optional
+from contextlib import nullcontext
 
 import httpx
 from rich.console import Console, Group
@@ -253,8 +256,6 @@ class ChatSession:
     
     def _initialize_system_prompt(self) -> None:
         """Load system prompt with all extensions."""
-        import os
-        import sys
         tools_prompt = build_tools_prompt()
         skills_prompt = self.skill_manager.get_all_system_prompts()
         
@@ -264,34 +265,8 @@ class ChatSession:
             plan_mode_prompt = self.plan_manager.get_system_prompt()
         
         # Get system type
-        system_type = "Windows" if os.name == "nt" else "Linux/Mac"
-        
-        # Get shell type
-        shell_type = "Unknown"
-        if os.name == "nt":
-            # Windows shell detection
-            if "PSModulePath" in os.environ:
-                shell_type = "PowerShell"
-            elif "COMSPEC" in os.environ and "cmd.exe" in os.environ.get("COMSPEC", ""):
-                shell_type = "CMD"
-            elif "MSYSTEM" in os.environ:
-                shell_type = "Git Bash"
-            else:
-                shell_type = "Windows Shell"
-        else:
-            # Unix-like shell detection
-            if "SHELL" in os.environ:
-                shell_path = os.environ.get("SHELL", "")
-                if "bash" in shell_path:
-                    shell_type = "Bash"
-                elif "zsh" in shell_path:
-                    shell_type = "Zsh"
-                elif "fish" in shell_path:
-                    shell_type = "Fish"
-                else:
-                    shell_type = os.path.basename(shell_path)
-            else:
-                shell_type = "Unix Shell"
+        system_type = self._get_system_type()
+        shell_type = self._get_tool_shell_type()
         
         # Build base system prompt
         system_prompt = self.prompt_manager.build_system_prompt(
@@ -513,18 +488,90 @@ class ChatSession:
         """Send a message with full multi-round tool calling."""
         # Add user message
         self.conversation.add_message(MessageRole.USER, content)
+
+        # Prefetch workspace structure when user asks about current project/folder context.
+        if self._should_prefetch_workspace_structure(content):
+            await self._prefetch_workspace_structure()
         
         # s06: Maybe compact context
         self._maybe_compact_context()
         
         # Start multi-round tool calling loop
         return await self._run_tool_loop(max_iterations=max_tool_iterations)
+
+    async def _prefetch_workspace_structure(self) -> None:
+        """Run one deterministic directory listing and inject it as tool_result context."""
+        if os.name == "nt":
+            command = "Get-ChildItem -Force | Select-Object -First 200 Mode,Length,LastWriteTime,Name"
+        else:
+            command = "ls -la"
+
+        _get_logger().debug("触发目录结构预取：先获取当前工作区目录列表")
+        preflight_call = ToolCall(
+            id="toolu_prefetch_workspace_structure",
+            name="bash",
+            args={"command": command},
+        )
+        results = await self._execute_tool_calls([preflight_call])
+        tool_result_blocks = self._build_tool_result_blocks([preflight_call], results)
+        self.conversation.add_message(
+            MessageRole.USER,
+            json.dumps(tool_result_blocks, ensure_ascii=False),
+        )
+
+    @staticmethod
+    def _should_prefetch_workspace_structure(content: str) -> bool:
+        """Decide whether current query needs a directory-first context pass."""
+        if not content:
+            return False
+        text = content.strip()
+        lower = text.lower()
+
+        # If user already points to concrete files/paths, avoid extra prefetch.
+        explicit_path_hints = ("\\", "/", ".py", ".md", ".json", ".yaml", ".yml", ".toml", ".txt")
+        if any(h in text for h in explicit_path_hints):
+            return False
+
+        folder_scope_keywords = (
+            "当前文件夹",
+            "当前目录",
+            "目录结构",
+            "项目结构",
+            "项目",
+            "仓库",
+            "代码库",
+            "file structure",
+            "project structure",
+            "repository",
+            "repo",
+        )
+        analysis_intent_keywords = (
+            "看",
+            "分析",
+            "了解",
+            "介绍",
+            "说说",
+            "逻辑",
+            "内容",
+            "结构",
+            "调用",
+            "调用逻辑",
+            "analyze",
+            "explain",
+            "overview",
+            "how",
+        )
+
+        has_scope = any(k in text for k in folder_scope_keywords) or any(k in lower for k in folder_scope_keywords)
+        has_intent = any(k in text for k in analysis_intent_keywords) or any(k in lower for k in analysis_intent_keywords)
+        return has_scope and has_intent
     
     async def _run_tool_loop(self, max_iterations: int = 10) -> str:
         """Run the multi-round tool calling loop (s01 + enhancements)."""
         state = {
             "turn_count": 0,
             "transition_reason": None,
+            "consecutive_tool_fail_rounds": 0,
         }
         
         for iteration in range(max_iterations):
@@ -542,8 +589,14 @@ class ChatSession:
             
             # Get AI response (only display on first iteration if no tool calls)
             _get_logger().debug("正在获取AI响应...")
-            full_content = await self._stream_ai_response(display_output=False)
-            _get_logger().debug(f"AI响应内容: {full_content[:200]}...")
+            thinking_ctx = (
+                nullcontext()
+                if self._is_debug_mode()
+                else self.console.status("[cyan]正在思考...[/cyan]", spinner="dots")
+            )
+            with thinking_ctx:
+                full_content = await self._stream_ai_response(display_output=False)
+            _get_logger().debug(f"AI响应内容:\n{self._format_debug_json(full_content)}")
 
             # Check for tool calls
             tool_calls = ToolCallParser.parse(full_content)
@@ -553,6 +606,7 @@ class ChatSession:
             
             if not tool_calls:
                 # No tool calls - final response
+                # Note: We removed the weak tool_nudge fallback because system prompt now enforces strict JSON-only tool calls.
                 _get_logger().debug("无工具调用，返回最终响应")
                 cleaned_content = self._sanitize_assistant_output(full_content)
                 self._try_capture_plan_from_response(cleaned_content)
@@ -570,13 +624,41 @@ class ChatSession:
             _get_logger().debug("开始执行工具调用")
             tool_results = await self._execute_tool_calls(tool_calls)
             _get_logger().debug(f"工具执行完成，获得 {len(tool_results)} 个结果")
+
+            error_results = [
+                r for r in tool_results
+                if (r or "").strip().lower().startswith("error")
+            ]
+            if tool_results and len(error_results) == len(tool_results):
+                state["consecutive_tool_fail_rounds"] += 1
+                _get_logger().warning(
+                    f"本轮工具全部失败，连续失败轮次: {state['consecutive_tool_fail_rounds']}"
+                )
+            else:
+                state["consecutive_tool_fail_rounds"] = 0
+
+            if state["consecutive_tool_fail_rounds"] >= 3:
+                latest = self._short_error(error_results[-1]) if error_results else "未知错误"
+                stop_msg = (
+                    "工具调用连续失败（3 轮），已停止自动重试。\n"
+                    f"最近错误：{latest}\n"
+                    "常见原因及修正:\n"
+                    "- 文件不存在: 先用 bash 列目录确认路径\n"
+                    "- 目录传给 read: read 只接受文件，目录请用 bash\n"
+                    "- old_str 不匹配: 用 read 获取精确内容后复制粘贴\n"
+                    "- 未知工具名: 检查工具名拼写\n"
+                    "请修正后重试，或开启新对话 (/new)。"
+                )
+                self.console.print(f"[red]{stop_msg}[/red]")
+                self.conversation.add_message(MessageRole.ASSISTANT, stop_msg)
+                return stop_msg
             
             # Add assistant message
             self.conversation.add_message(MessageRole.ASSISTANT, full_content)
             
             # Add tool results
             tool_result_blocks = self._build_tool_result_blocks(tool_calls, tool_results)
-            _get_logger().debug(f"构建工具结果块: {json.dumps(tool_result_blocks, ensure_ascii=False)[:200]}...")
+            _get_logger().debug(f"构建工具结果块:\n{json.dumps(tool_result_blocks, indent=2, ensure_ascii=False)}")
             self.conversation.add_message(
                 MessageRole.USER,
                 json.dumps(tool_result_blocks, ensure_ascii=False)
@@ -585,13 +667,41 @@ class ChatSession:
         
         # Max iterations reached
         self.console.print(f"[yellow]Max tool iterations ({max_iterations}) reached, generating final response...[/yellow]")
-        final_content = await self._stream_ai_response(display_output=False)
+        final_ctx = (
+            nullcontext()
+            if self._is_debug_mode()
+            else self.console.status("[cyan]正在思考...[/cyan]", spinner="dots")
+        )
+        with final_ctx:
+            final_content = await self._stream_ai_response(display_output=False)
         cleaned_final = self._sanitize_assistant_output(final_content)
         self._try_capture_plan_from_response(cleaned_final)
         self.conversation.add_message(MessageRole.ASSISTANT, cleaned_final)
         if cleaned_final:
             self.console.print(Markdown(cleaned_final))
         return cleaned_final
+
+    @staticmethod
+    def _format_debug_json(text: str, max_len: int = 2000) -> str:
+        """Format text as indented JSON if possible, otherwise return as-is."""
+        if not text or not isinstance(text, str):
+            return str(text)[:max_len]
+        # Skip JSON formatting for very large text to avoid performance issues
+        if len(text) > 5000:
+            return text[:max_len] + "\n... (truncated)"
+        stripped = text.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                data = json.loads(stripped)
+                formatted = json.dumps(data, indent=2, ensure_ascii=False)
+                if len(formatted) > max_len:
+                    return formatted[:max_len] + "\n... (truncated)"
+                return formatted
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if len(text) > max_len:
+            return text[:max_len] + "\n... (truncated)"
+        return text
 
     @staticmethod
     def _sanitize_assistant_output(content: str) -> str:
@@ -606,7 +716,7 @@ class ChatSession:
         cleaned = re.sub(r"```(?:json)?\s*```", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
-    
+
     async def _check_scheduled_tasks(self):
         """Check and inject scheduled task notifications (s14)."""
         notifications = self.scheduler.check_and_fire()
@@ -627,21 +737,28 @@ class ChatSession:
         for attempt in range(retries):
             try:
                 openai_messages = self.conversation.to_openai_messages()
+                runtime_context = self._build_runtime_execution_context()
+                openai_messages.append({
+                    "role": "system",
+                    "content": runtime_context,
+                })
                 _get_logger().debug(f"第 {attempt+1}/{retries} 次尝试调用AI API")
                 _get_logger().debug(f"模型: {self.config.model}")
                 _get_logger().debug(f"基础URL: {self.config.base_url}")
                 _get_logger().debug(f"发送给大模型的消息数量: {len(openai_messages)}")
+                if len(openai_messages) > 30:
+                    _get_logger().warning(f"消息数量较多 ({len(openai_messages)} 条)，建议尽快完成当前任务或开启新对话以避免上下文混乱。")
                 
                 # 记录最后一条用户消息
                 for i, msg in enumerate(openai_messages):
                     if msg['role'] == 'user':
-                        _get_logger().debug(f"用户消息 {i}: {msg['content'][:500]}...")
+                        _get_logger().debug(f"用户消息 {i}:\n{self._format_debug_json(msg['content'], max_len=500)}")
                     elif msg['role'] == 'assistant' and i == len(openai_messages) - 1:
-                        _get_logger().debug(f"助手消息 {i}: {msg['content'][:500]}...")
+                        _get_logger().debug(f"助手消息 {i}:\n{self._format_debug_json(msg['content'], max_len=500)}")
                 
                 async with self.client.stream(
                     "POST",
-                    "/v1/chat/completions",
+                    "/chat/completions",
                     json={
                         "model": self.config.model,
                         "messages": openai_messages,
@@ -702,17 +819,63 @@ class ChatSession:
                     return full_content
                     
             except httpx.HTTPStatusError as e:
+                status = e.response.status_code if e.response is not None else "unknown"
+                body = ""
+                if e.response is not None:
+                    try:
+                        body = (e.response.text or "").strip()
+                    except Exception:
+                        body = ""
+                body_preview = body[:300] + ("..." if len(body) > 300 else "")
+                _get_logger().error(f"调用大模型失败 HTTP {status}: {body_preview}")
+                self.console.print(f"[red]调用大模型失败 (HTTP {status})[/red]")
+                if body_preview:
+                    self.console.print(f"[dim]返回信息: {body_preview}[/dim]")
                 if e.response.status_code == 401:
                     self._show_api_error()
                 if e.response.status_code != 429:
                     raise
             except Exception as e:
-                self.console.print(f"[red]Error: {e}[/red]")
+                _get_logger().error(f"调用大模型失败: {e}")
+                self.console.print(f"[red]调用大模型失败: {e}[/red]")
                 if attempt == retries - 1:
                     raise
                 wait_time = (2 ** attempt) * 1
-                self.console.print(f"[yellow]Error occurred. Waiting {wait_time}s before retrying...[/yellow]")
+                self.console.print(f"[yellow]请求异常，{wait_time}s 后重试...[/yellow]")
                 await asyncio.sleep(wait_time)
+
+    @staticmethod
+    def _get_system_type() -> str:
+        """Get concise system type string for prompts."""
+        return "Windows" if os.name == "nt" else "Linux/Mac"
+
+    @staticmethod
+    def _get_tool_shell_type() -> str:
+        """Get the shell type actually used by the bash tool."""
+        if os.name == "nt":
+            return "PowerShell"
+        shell_path = os.environ.get("SHELL", "")
+        if shell_path:
+            return os.path.basename(shell_path)
+        return "sh"
+
+    def _build_runtime_execution_context(self) -> str:
+        """Build a dynamic runtime context system message for each API call."""
+        system_type = self._get_system_type()
+        shell_type = self._get_tool_shell_type()
+        cwd = os.getcwd()
+        path_style = "Windows path (e.g. D:\\\\project\\\\file.py)" if os.name == "nt" else "POSIX path (e.g. /home/user/project/file.py)"
+        return (
+            "Runtime execution context (authoritative for tool calls):\n"
+            f"- OS: {system_type}\n"
+            f"- Tool command shell: {shell_type}\n"
+            f"- Current working directory: {cwd}\n"
+            f"- Path style: {path_style}\n"
+            "- For bash tool calls, generate commands that run directly in the shell above.\n"
+            "- For read/write/edit tool calls, use valid file paths under current workspace.\n"
+            "- REMINDER: read tool ONLY accepts files, NEVER directories. Use bash for directory listings.\n"
+            "- REMINDER: Do NOT invent file paths. Only use paths confirmed by prior bash/read results."
+        )
     
     async def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> list[str]:
         """Execute tool calls with deduplication and compact progress UI."""
@@ -720,8 +883,14 @@ class ChatSession:
         executed = {}
         progress_items: list[dict[str, str]] = []
         spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        show_spinner_ui = not self._is_debug_mode()
 
-        with Live(self._render_tool_progress(progress_items), console=self.console, refresh_per_second=12) as live:
+        live_ctx = (
+            Live(self._render_tool_progress(progress_items), console=self.console, refresh_per_second=12)
+            if show_spinner_ui
+            else nullcontext(None)
+        )
+        with live_ctx as live:
             for call in tool_calls:
                 # Deduplication key
                 args_key = json.dumps(call.args, sort_keys=True, ensure_ascii=False)
@@ -734,7 +903,8 @@ class ChatSession:
                         "text": f"{self._format_tool_call_label(call)} (cached)",
                     })
                     results.append(executed[cache_key])
-                    live.update(self._render_tool_progress(progress_items))
+                    if show_spinner_ui and live is not None:
+                        live.update(self._render_tool_progress(progress_items))
                     continue
 
                 _get_logger().debug(f"开始执行工具: {call.name}")
@@ -745,16 +915,25 @@ class ChatSession:
                     "text": self._format_tool_call_label(call),
                 }
                 progress_items.append(item)
-                live.update(self._render_tool_progress(progress_items, spinner_frames[0]))
+                if show_spinner_ui and live is not None:
+                    live.update(self._render_tool_progress(progress_items, spinner_frames[0]))
 
                 exec_task = asyncio.create_task(self.tool_executor.execute(call))
                 spin_index = 0
-                while not exec_task.done():
-                    live.update(self._render_tool_progress(progress_items, spinner_frames[spin_index % len(spinner_frames)]))
-                    spin_index += 1
-                    await asyncio.sleep(0.08)
+                current_action = self._format_tool_call_action(call)
+                start_time = time.monotonic()
+                if show_spinner_ui and live is not None:
+                    while not exec_task.done():
+                        live.update(self._render_tool_progress(progress_items, spinner_frames[spin_index % len(spinner_frames)], current_action))
+                        spin_index += 1
+                        await asyncio.sleep(0.08)
 
                 result = await exec_task
+                if show_spinner_ui:
+                    # Ensure spinner is visible for at least 300ms so user can see it
+                    elapsed = time.monotonic() - start_time
+                    if elapsed < 0.3:
+                        await asyncio.sleep(0.3 - elapsed)
                 _get_logger().debug(f"工具执行完成: {call.name}")
                 _get_logger().debug(f"工具执行结果: {result[:100]}...")
                 
@@ -768,23 +947,58 @@ class ChatSession:
                 else:
                     item["status"] = "success"
 
-                live.update(self._render_tool_progress(progress_items))
+                if show_spinner_ui and live is not None:
+                    live.update(self._render_tool_progress(progress_items))
 
         _get_logger().debug(f"所有工具调用执行完成，共 {len(results)} 个结果")
         return results
 
+    @staticmethod
+    def _is_debug_mode() -> bool:
+        """Check whether debug logging mode is enabled."""
+        return os.environ.get("SUN_LOG_LEVEL", "").upper() == "DEBUG"
+
     def _format_tool_call_label(self, call: ToolCall) -> str:
         """Format a concise, user-friendly tool execution label."""
         tool_name_map = {
-            "read": "Used ReadFile",
-            "write": "Used WriteFile",
-            "edit": "Used StrReplaceFile",
-            "bash": "Used Bash",
-            "web_search": "Used WebSearch",
-            "weather_now": "Used WeatherNow",
+            "read": "读取文件",
+            "write": "写入文件",
+            "edit": "编辑文件",
+            "bash": "执行命令",
+            "web_search": "搜索网页",
+            "weather_now": "查询天气",
         }
         base = tool_name_map.get(call.name, f"Used {call.name}")
 
+        context = self._get_tool_call_context(call)
+        if context:
+            if len(context) > 56:
+                context = context[:53] + "..."
+            return f"{base} ({context})"
+        return base
+
+    def _format_tool_call_action(self, call: ToolCall) -> str:
+        """Format a Chinese action description for the spinner."""
+        action_map = {
+            "read": "正在读取文件",
+            "write": "正在写入文件",
+            "edit": "正在编辑文件",
+            "bash": "正在执行命令",
+            "web_search": "正在搜索",
+            "weather_now": "正在查询天气",
+        }
+        action = action_map.get(call.name, f"正在执行 {call.name}")
+
+        context = self._get_tool_call_context(call)
+        if context:
+            if len(context) > 56:
+                context = context[:53] + "..."
+            return f"{action} {context}"
+        return action
+
+    @staticmethod
+    def _get_tool_call_context(call: ToolCall) -> str:
+        """Extract display context from a tool call."""
         context = (
             call.args.get("file_path")
             or call.args.get("location")
@@ -792,12 +1006,7 @@ class ChatSession:
             or call.args.get("command")
             or ""
         )
-        context = str(context).strip()
-        if context:
-            if len(context) > 56:
-                context = context[:53] + "..."
-            return f"{base} ({context})"
-        return base
+        return str(context).strip()
 
     @staticmethod
     def _short_error(result: str) -> str:
@@ -808,12 +1017,14 @@ class ChatSession:
         return msg[:72] + ("..." if len(msg) > 72 else "")
 
     @staticmethod
-    def _render_tool_progress(items: list[dict[str, str]], spinner: Optional[str] = None):
+    def _render_tool_progress(items: list[dict[str, str]], spinner: Optional[str] = None, current_action: Optional[str] = None):
         """Render compact tool progress lines with status dots and spinner."""
         lines = []
         for item in items:
             status = item.get("status", "running")
             text = item.get("text", "")
+            if status == "running":
+                continue
             if status == "success":
                 dot = "[green]●[/green]"
             elif status == "error":
@@ -823,10 +1034,12 @@ class ChatSession:
             lines.append(Text.from_markup(f"{dot} {text}"))
 
         if spinner:
-            lines.append(Text.from_markup(f"[cyan]{spinner} 正在思考执行...[/cyan]"))
+            action_text = current_action or "正在执行工具"
+            lines.append(Text.from_markup(f"[cyan]{spinner} {action_text}...[/cyan]"))
 
         if not lines:
-            lines.append(Text.from_markup("[cyan]⠋ 正在思考执行...[/cyan]"))
+            action_text = current_action or "正在执行工具"
+            lines.append(Text.from_markup(f"[cyan]⠋ {action_text}...[/cyan]"))
 
         return Group(*lines)
     
@@ -845,10 +1058,9 @@ class ChatSession:
     
     def _micro_compact(self):
         """Layer 1: Replace old tool results with placeholders."""
-        # Find tool result messages older than 3 turns
         messages = self.conversation.messages
         tool_result_indices = []
-        
+
         for i, msg in enumerate(messages):
             if msg.role == MessageRole.USER and msg.content:
                 try:
@@ -857,10 +1069,10 @@ class ChatSession:
                         tool_result_indices.append(i)
                 except Exception:
                     pass
-        
-        # Keep last 3, replace older ones with placeholders
-        if len(tool_result_indices) > 3:
-            for idx in tool_result_indices[:-3]:
+
+        # Keep last 2 tool results, replace older ones with placeholders to prevent context bloat
+        if len(tool_result_indices) > 2:
+            for idx in tool_result_indices[:-2]:
                 try:
                     content = messages[idx].content
                     if isinstance(content, str):
@@ -880,44 +1092,44 @@ class ChatSession:
                     pass
     
     def _maybe_compact_context(self):
-        """Layer 2: Auto-compact when token threshold exceeded."""
+        """Layer 2: Auto-compact when message count threshold exceeded."""
         if not getattr(self.config, 'auto_compact', True):
             return
-        
+
         messages = self.conversation.messages
-        trigger = getattr(self.config, 'compact_trigger_messages', 50)
-        
+        trigger = getattr(self.config, 'compact_trigger_messages', 24)
+
         if len(messages) <= trigger:
             return
-        
-        # Simple summary approach
-        keep_recent = 8
+
+        # Keep recent messages to preserve working context
+        keep_recent = getattr(self.config, 'compact_keep_recent', 10)
         anchor = messages[0] if messages and messages[0].role == MessageRole.SYSTEM else None
         tail = messages[-keep_recent:] if keep_recent < len(messages) else list(messages)
-        
+
         # Remove old COMPACT_MARKER messages
         tail = [
             msg for msg in tail
             if not (msg.role == MessageRole.SYSTEM and isinstance(msg.content, str) and msg.content.startswith(self.COMPACT_MARKER))
         ]
-        
+
         # Build summary
         middle_start = 1 if anchor else 0
         middle_end = max(middle_start, len(messages) - keep_recent)
         middle = messages[middle_start:middle_end]
-        
+
         if not middle:
             return
-        
+
         summary = self._build_compact_summary(middle)
         compact_message = Message(role=MessageRole.SYSTEM, content=f"{self.COMPACT_MARKER}\n{summary}")
-        
+
         new_messages = []
         if anchor:
             new_messages.append(anchor)
         new_messages.append(compact_message)
         new_messages.extend(tail)
-        
+
         self.conversation.messages = new_messages
         self.console.print(f"[dim]Context compacted: {len(messages)} -> {len(new_messages)} messages[/dim]")
     

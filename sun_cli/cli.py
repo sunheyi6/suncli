@@ -680,17 +680,39 @@ def config(
         ))
         return
     
+    api_related_changed = False
+    
     if api_key:
         update_config(api_key=api_key)
         console.print("[green][OK][/green] API key saved successfully!")
+        api_related_changed = True
     
     if base_url:
         update_config(base_url=base_url)
         console.print(f"[green][OK][/green] Base URL set to: [cyan]{base_url}[/cyan]")
+        api_related_changed = True
     
     if model:
         update_config(model=model)
         console.print(f"[green][OK][/green] Model set to: [cyan]{model}[/cyan]")
+        api_related_changed = True
+    
+    # Test API connection after API-related config changes
+    if api_related_changed:
+        from .config import test_api_connection
+        cfg = get_config(reload=True)
+        success, msg = test_api_connection(cfg)
+        if success:
+            console.print(f"[green][OK][/green] {msg}")
+        else:
+            console.print(Panel(
+                f"[bold yellow]API 连接测试未通过[/bold yellow]\n\n"
+                f"{msg}\n\n"
+                f"[dim]请检查配置后重试：[/dim]\n"
+                f"  [cyan]sun config --show[/cyan]  查看当前配置",
+                title="[yellow]配置警告[/yellow]",
+                border_style="yellow"
+            ))
     
     if auto_confirm is True:
         update_config(auto_confirm=True)
