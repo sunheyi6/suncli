@@ -99,11 +99,7 @@ def get_prompt_info() -> str:
 
 def get_prompt_plain_text() -> str:
     """Get current user and path info for prompt_toolkit prompt display."""
-    try:
-        username = os.getenv("USERNAME") or os.getenv("USER") or "user"
-        return f"{username}"
-    except Exception:
-        return "user"
+    return ""
 
 
 # Command hints data

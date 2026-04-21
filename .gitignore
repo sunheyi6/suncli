@@ -38,3 +38,10 @@ ENV/
 .api_config
 config.json
 chat_history/
+
+# Runtime data
+.tasks/
+.memory/
+.runtime-tasks/
+.team/
+.worktrees/

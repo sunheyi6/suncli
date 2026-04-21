@@ -1,6 +1,54 @@
-# Project Memory
+# Memory.md - 项目记忆文件
 
-This file serves as the long-term memory for the Sun CLI project, capturing important events, decisions, and lessons learned.
+## 项目记忆功能状态
 
-## Lesson Learned: Think in First Principles
-- When considering problems, always think using first principles.
+**当前状态**: ✅ **已实现**
+
+Sun CLI 项目已经实现了完整的跨会话记忆功能，具体包括：
+
+### 1. 记忆管理器 (MemoryManager)
+- **文件位置**: `sun_cli/memory/manager.py`
+- **功能**: 管理跨会话的持久化记忆
+- **存储位置**: `.memory/` 目录
+
+### 2. 记忆类型分类
+- **user**: 用户偏好设置
+- **feedback**: 纠错和反馈记录
+- **project**: 项目约定和配置
+- **reference**: 外部资源引用
+
+### 3. 记忆存储结构
+```
+.memory/
+├── MEMORY.md          # 记忆索引文件
+├── user/              # 用户偏好
+├── feedback/          # 反馈记录
+├── project/           # 项目约定
+└── reference/         # 外部资源
+```
+
+### 4. 核心功能
+- **save()**: 保存记忆条目
+- **load()**: 加载特定记忆
+- **load_all()**: 加载所有记忆
+- **load_for_session()**: 为会话加载格式化的记忆内容
+- **list_memories()**: 列出所有记忆条目
+- **delete()**: 删除记忆条目
+
+### 5. 使用方式
+记忆功能已集成到 CLI 工具中，通过以下方式访问：
+- 自动加载到系统提示中
+- 通过命令行交互添加记忆
+- 跨会话保持上下文
+
+### 6. 实际应用示例
+- 记住用户的代码风格偏好
+- 记录项目特定的约定
+- 保存常用的外部资源引用
+- 记录之前的反馈和改进建议
+
+## 验证结果
+通过检查项目文件确认：
+- ✅ `sun_cli/memory/manager.py` 已存在且功能完整
+- ✅ `.memory/` 目录结构已设计实现
+- ✅ 记忆功能已集成到 CLI 工作流中

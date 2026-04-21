@@ -145,7 +145,7 @@ async def get_input_with_inline_menu(
     if not HAS_UI:
         # Fallback to standard input
         try:
-            return input(f"{prompt} > ")
+            return input(f"{prompt} > " if prompt.strip() else "> ")
         except (EOFError, KeyboardInterrupt):
             return ""
     
@@ -283,7 +283,7 @@ async def get_input_with_inline_menu(
                         content=BufferControl(
                             buffer=buffer,
                             input_processors=[
-                                BeforeInput(lambda: f"{prompt} > "),
+                                BeforeInput(lambda: f"{prompt} > " if prompt.strip() else "> "),
                             ],
                             include_default_input_processors=True,
                         ),
@@ -309,7 +309,7 @@ async def get_input_with_inline_menu(
     except Exception as e:
         # Fallback on error
         try:
-            return input(f"{prompt} > ")
+            return input(f"{prompt} > " if prompt.strip() else "> ")
         except (EOFError, KeyboardInterrupt):
             return ""
 

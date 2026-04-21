@@ -5,9 +5,18 @@
 ## 功能特性
 
 - 💬 交互式聊天，支持流式响应
+- 🤖 **多轮工具调用** - AI 可读写文件、执行 Shell 命令、搜索网络等
+- 🛡️ **路径安全沙箱** - 所有文件操作限制在工作区内
 - 📝 基于 Markdown 的提示词系统（灵感来自 OpenClaw）
-- 🔥 **智能 Git 工作流** - AI 驱动的提交，支持自动拉取和冲突解决
+- 🧠 **跨会话记忆** - AI 记住你的偏好，下次聊天依然有效
 - 📋 **计划模式** - 在执行前审查和批准实施计划
+- 📋 **任务板** - 持久化任务图，支持依赖关系追踪
+- 🔄 **后台任务** - 长时间运行的命令不阻塞主聊天循环
+- ⏰ **定时调度** - Cron 风格的任务调度
+- 👥 **团队协作** - 生成队友并协调多智能体工作流
+- 🌲 **Git Worktree 隔离** - 为不同任务创建独立的工作区
+- 🔌 **MCP 支持** - 连接外部 Model Context Protocol 服务器
+- 🔥 **智能 Git 工作流** - AI 驱动的提交，支持自动拉取和冲突解决
 - 🔔 任务完成时的桌面通知
 - 🔊 成功操作的音效提示
 - ⚙️ 简单的配置管理
@@ -15,18 +24,9 @@
 - 🔧 执行本地 Shell 命令而不调用 AI
 - 🇨🇳 为中国大陆用户提供中文语言支持
 - 🌐 支持国内 AI 服务（Kimi、通义千问、智谱 AI、DeepSeek）
-
-### 🆕 高级功能 (s01-s19 完整实现)
-
-- 🔒 **路径安全沙箱** - 所有文件操作限制在工作区内
-- 🤖 **Subagent 系统** - 委派复杂子任务给隔离的代理
-- ⏳ **后台任务** - 长时间运行的命令不阻塞主循环
-- 🧠 **Memory 系统** - 跨会话持久化重要信息
-- 👥 **团队系统** - 多智能体协作，支持邮箱和协议
-- 🌲 **Worktree 隔离** - 每个任务独立的 git 工作目录
-- ⏰ **定时调度** - Cron 风格的任务调度
-- 🔌 **MCP/Plugin** - 支持外部工具服务器
-- 📦 **三层上下文压缩** - 无限长会话支持
+- 🎛️ **模型预设** - 内置 8 家提供商预设，支持交互式向导配置
+- 📝 **输入历史** - 按 ↑/↓ 键在历史中导航
+- 🐛 **调试模式** - `--debug` 输出详细日志
 
 ## 安装
 
@@ -41,6 +41,11 @@ pip install .
 ## 快速开始
 
 1. **配置 API：**
+
+   **交互式配置（推荐）：**
+   ```bash
+   suncli models --setup
+   ```
    
    **Kimi API（Moonshot）：**
    ```bash
@@ -60,6 +65,42 @@ pip install .
    ```bash
    suncli
    ```
+
+## 🤖 AI 工具
+
+Sun CLI 可以在对话中调用丰富的工具集，AI 会根据你的请求自动决定使用哪些工具。
+
+### 文件与 Shell 工具
+
+| 工具 | 描述 |
+|------|------|
+| `read` | 读取文件内容（支持 offset/limit） |
+| `write` | 写入或覆盖文件（自动创建父目录） |
+| `edit` | 精确字符串替换编辑 |
+| `bash` | 执行 Shell 命令（Windows 下为 PowerShell，Linux/Mac 下为 bash） |
+
+### 扩展工具
+
+| 工具 | 描述 |
+|------|------|
+| `web_search` | 网络搜索（DuckDuckGo 或 Kimi 原生搜索） |
+| `weather_now` | 实时天气查询（wttr.in） |
+| `subagent` | 生成子代理，用独立上下文处理子任务 |
+| `background_run` | 在后台运行命令 |
+| `background_check` | 检查后台任务状态和输出 |
+| `schedule_create` | 创建 Cron 定时任务 |
+| `schedule_list` | 列出定时任务 |
+| `schedule_remove` | 删除定时任务 |
+| `save_memory` | 保存跨会话记忆 |
+| `load_memory` | 加载已存储的记忆 |
+| `team_spawn` | 创建一个队友智能体 |
+| `team_send` | 向队友发送消息 |
+| `team_list` | 列出所有队友 |
+| `worktree_create` | 创建 Git Worktree 隔离工作区 |
+| `worktree_enter` | 进入 Worktree 目录 |
+| `worktree_closeout` | 关闭 Worktree（保留或删除） |
+
+---
 
 ## 📋 计划模式
 
@@ -241,6 +282,70 @@ suncli prompt
 suncli prompt --path
 ```
 
+## 🎛️ 模型管理
+
+Sun CLI 内置了 8 家主流 AI 提供商的模型预设：
+
+| 提供商 | 示例模型 |
+|----------|----------------|
+| OpenAI | GPT-4o, GPT-4o-mini |
+| Anthropic | Claude 3.5 Sonnet, Claude 3 Opus |
+| Google | Gemini 2.0 Pro |
+| Kimi（国际） | Kimi K2.5, Kimi K2 |
+| Kimi（国内） | moonshot-v1-128k/32k/8k |
+| 通义千问 | Qwen-Max, Qwen-Plus, Qwen-Turbo |
+| 智谱 AI（GLM） | GLM-4-Plus, GLM-4, GLM-4-Air |
+| DeepSeek | DeepSeek-V3, DeepSeek-R1 |
+
+### 命令
+
+```bash
+# 交互式模型配置向导
+suncli models --setup
+
+# 列出所有可用预设
+suncli models --list
+
+# 按提供商筛选
+suncli models --provider Kimi
+
+# 按预设名或模型 ID 设置模型
+suncli models --set "GPT-4o"
+suncli models --set moonshot-v1-128k
+```
+
+## 📋 任务板
+
+Sun CLI 维护一个持久化的任务板（存储在 `.tasks/` 目录），支持任务依赖链追踪。
+
+### 聊天命令
+
+| 命令 | 描述 |
+|---------|-------------|
+| `/tasks` | 显示持久化任务板 |
+| `/task <id> <status>` | 更新任务状态（`pending` / `in_progress` / `completed`） |
+
+## 📝 输入历史
+
+你的输入会自动保存，聊天时可通过 **↑** 和 **↓** 键在历史中导航。
+
+| 命令 | 描述 |
+|---------|-------------|
+| `/history` | 显示最近的输入历史（最近 20 条） |
+| `/history clear` | 清除所有输入历史 |
+
+## 🐛 调试模式
+
+启用详细日志以排查问题：
+
+```bash
+suncli --debug
+# 或
+suncli -d
+```
+
+这会输出包括 API 请求、工具调用、上下文压缩事件等详细信息。
+
 ## 使用示例
 
 ```bash
@@ -275,12 +380,19 @@ You: exit
 | `suncli config --base-url <url>` | 设置 API 基础 URL |
 | `suncli config --model <model>` | 设置模型 |
 | `suncli config --show` | 显示当前配置 |
+| `suncli config --yolo` | 启用自动确认模式（跳过所有确认） |
+| `suncli config --no-yolo` | 禁用自动确认模式 |
+| `suncli models --setup` | 交互式模型选择向导 |
+| `suncli models --list` | 列出所有可用模型预设 |
+| `suncli models --provider <name>` | 按提供商筛选模型 |
+| `suncli models --set <preset>` | 按预设名或模型 ID 设置模型 |
 | `suncli prompt` | 预览组合的系统提示词 |
 | `suncli prompt --list` | 列出所有提示词文件 |
 | `suncli prompt --show <name>` | 查看特定提示词 |
 | `suncli prompt --edit <name>` | 编辑提示词文件 |
 | `suncli prompt --path` | 显示提示词目录 |
 | `suncli --version` | 显示版本 |
+| `suncli --debug` | 启用调试模式，输出详细日志 |
 
 ## 聊天命令
 
@@ -293,10 +405,16 @@ You: exit
 | `/clear` | 清除对话历史（保留系统提示词） |
 | `/new` | 开始新对话 |
 | `/config` | 显示当前配置 |
+| `/history` | 显示最近的输入历史 |
+| `/history clear` | 清除所有输入历史 |
 | `/plan` | 为复杂任务进入计划模式 |
 | `/approve` | 批准并执行当前计划 |
 | `/modify` | 请求修改计划 |
 | `/cancel` | 取消计划模式 |
+| `/tasks` | 显示持久化任务板 |
+| `/task <id> <status>` | 更新任务状态（`pending` / `in_progress` / `completed`） |
+| `/next` | 中断当前输出，切换到下一条排队消息 |
+| `Ctrl+O` | 快捷键：中断并切换到下一条排队消息 |
 
 ## Shell 命令
 
@@ -354,6 +472,30 @@ suncli config --api-key sk-xxx --base-url https://api.openai.com/v1 --model gpt-
 | `SUN_BASE_URL` | API 基础 URL | `https://api.openai.com/v1` |
 | `SUN_MODEL` | 使用的模型 | `gpt-4o-mini` |
 | `SUN_TEMPERATURE` | 采样温度 | `0.7` |
+
+## 高级功能
+
+### 上下文压缩
+
+对于长对话，Sun CLI 会自动压缩较早的消息以保持在 Token 限制内，同时保留系统提示词和近期上下文。
+
+### 速率限制重试
+
+当 API 返回 429（速率限制）错误时，Sun CLI 会自动以指数退避策略进行重试。
+
+### 自动确认模式（Yolo 模式）
+
+跳过所有确认提示，实现全自动工作流：
+
+```bash
+suncli config --yolo
+```
+
+⚠️ **警告：** 此模式下文件修改和 Git 操作将直接执行，不再询问确认。请谨慎使用！
+
+### 项目上下文检测
+
+启动时，Sun CLI 会自动检测你的项目类型并加载相关上下文。如果项目根目录存在 `AGENTS.md` 文件，其指令会自动加载到系统提示词中。
 
 ## 开发
 

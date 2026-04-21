@@ -5,9 +5,18 @@ A Claude-like CLI tool powered by AI, built with Python.
 ## Features
 
 - 💬 Interactive chat with streaming responses
+- 🤖 **Multi-round tool calling** - AI can read/write files, execute shell commands, search the web, and more
+- 🛡️ **Path sandbox** - All file operations are restricted to the workspace for safety
 - 📝 Markdown-based prompt system (inspired by OpenClaw)
-- 🔥 **Smart Git Workflow** - AI-powered commit with auto-pull & conflict resolution
+- 🧠 **Persistent memory** - AI remembers your preferences across sessions
 - 📋 **Plan Mode** - Review and approve implementation plans before execution
+- 📋 **Task board** - Persistent task graph with dependency tracking
+- 🔄 **Background tasks** - Run long commands without blocking the chat
+- ⏰ **Task scheduling** - Cron-based scheduled prompts
+- 👥 **Team collaboration** - Spawn teammates and coordinate multi-agent workflows
+- 🌿 **Git worktree isolation** - Create isolated workspaces for different tasks
+- 🔌 **MCP support** - Connect to external Model Context Protocol servers
+- 🔥 **Smart Git Workflow** - AI-powered commit with auto-pull & conflict resolution
 - 🔔 Desktop notifications for task completion
 - 🔊 Sound effects for successful operations
 - ⚙️ Simple configuration management
@@ -15,6 +24,9 @@ A Claude-like CLI tool powered by AI, built with Python.
 - 🔧 Execute local shell commands without calling AI
 - 🇨🇳 Chinese language support for users in mainland China
 - 🌐 Support for domestic AI services (Kimi, Qwen, GLM, DeepSeek)
+- 🎛️ **Model presets** - Built-in presets for 8 providers, interactive setup wizard
+- 📝 **Input history** - Navigate previous inputs with arrow keys
+- 🐛 **Debug mode** - Detailed logging with `--debug`
 
 ## Installation
 
@@ -30,6 +42,11 @@ pip install .
 
 1. **Configure API:**
    
+   **Interactive setup (recommended):**
+   ```bash
+   suncli models --setup
+   ```
+   
    **For Kimi API (Moonshot):**
    ```bash
    suncli config --api-key <your-kimi-api-key> --base-url https://api.moonshot.cn/v1 --model moonshot-v1-128k
@@ -44,6 +61,42 @@ pip install .
    ```bash
    suncli
    ```
+
+## 🤖 AI Tools
+
+Sun CLI can invoke a rich set of tools during conversations. The AI automatically decides which tools to use based on your requests.
+
+### File & Shell Tools
+
+| Tool | Description |
+|------|-------------|
+| `read` | Read file contents (supports offset/limit) |
+| `write` | Write or overwrite files (auto-creates parent directories) |
+| `edit` | Precise string replacement editing |
+| `bash` | Execute shell commands (PowerShell on Windows, bash on Linux/Mac) |
+
+### Extended Tools
+
+| Tool | Description |
+|------|-------------|
+| `web_search` | Search the web (DuckDuckGo or Kimi native search) |
+| `weather_now` | Current weather query (wttr.in) |
+| `subagent` | Spawn a subagent with fresh context for sub-tasks |
+| `background_run` | Run commands in the background |
+| `background_check` | Check background task status and output |
+| `schedule_create` | Create cron-based scheduled tasks |
+| `schedule_list` | List scheduled tasks |
+| `schedule_remove` | Remove a scheduled task |
+| `save_memory` | Save cross-session memories |
+| `load_memory` | Load stored memories |
+| `team_spawn` | Create a teammate agent |
+| `team_send` | Send messages to teammates |
+| `team_list` | List all teammates |
+| `worktree_create` | Create a Git worktree for isolated work |
+| `worktree_enter` | Enter a worktree directory |
+| `worktree_closeout` | Close a worktree (keep or remove) |
+
+---
 
 ## 📋 Plan Mode
 
@@ -225,6 +278,70 @@ suncli prompt
 suncli prompt --path
 ```
 
+## 🎛️ Model Management
+
+Sun CLI includes built-in presets for 8 popular AI providers:
+
+| Provider | Example Models |
+|----------|----------------|
+| OpenAI | GPT-4o, GPT-4o-mini |
+| Anthropic | Claude 3.5 Sonnet, Claude 3 Opus |
+| Google | Gemini 2.0 Pro |
+| Kimi (International) | Kimi K2.5, Kimi K2 |
+| Kimi (Domestic) | moonshot-v1-128k/32k/8k |
+| Qwen | Qwen-Max, Qwen-Plus, Qwen-Turbo |
+| Zhipu (GLM) | GLM-4-Plus, GLM-4, GLM-4-Air |
+| DeepSeek | DeepSeek-V3, DeepSeek-R1 |
+
+### Commands
+
+```bash
+# Interactive model setup wizard
+suncli models --setup
+
+# List all available presets
+suncli models --list
+
+# Filter by provider
+suncli models --provider Kimi
+
+# Set model by preset name or model ID
+suncli models --set "GPT-4o"
+suncli models --set moonshot-v1-128k
+```
+
+## 📋 Task Board
+
+Sun CLI maintains a persistent task board (stored in `.tasks/`) that tracks work items with dependency chains.
+
+### Chat Commands
+
+| Command | Description |
+|---------|-------------|
+| `/tasks` | Show the persistent task board |
+| `/task <id> <status>` | Update task status (`pending` / `in_progress` / `completed`) |
+
+## 📝 Input History
+
+Your inputs are automatically saved and can be navigated with the **↑** and **↓** arrow keys during chat.
+
+| Command | Description |
+|---------|-------------|
+| `/history` | Show recent input history (last 20 entries) |
+| `/history clear` | Clear all input history |
+
+## 🐛 Debug Mode
+
+Enable detailed logging to troubleshoot issues:
+
+```bash
+suncli --debug
+# or
+suncli -d
+```
+
+This prints detailed logs including API requests, tool calls, context compression events, and more.
+
 ## Usage Example
 
 ```bash
@@ -259,12 +376,19 @@ Goodbye!
 | `suncli config --base-url <url>` | Set API base URL |
 | `suncli config --model <model>` | Set model |
 | `suncli config --show` | Show current configuration |
+| `suncli config --yolo` | Enable auto-confirm mode (skip all confirmations) |
+| `suncli config --no-yolo` | Disable auto-confirm mode |
+| `suncli models --setup` | Interactive model selection wizard |
+| `suncli models --list` | List all available model presets |
+| `suncli models --provider <name>` | Filter models by provider |
+| `suncli models --set <preset>` | Set model by preset name or ID |
 | `suncli prompt` | Preview combined system prompt |
 | `suncli prompt --list` | List all prompt files |
 | `suncli prompt --show <name>` | View a specific prompt |
 | `suncli prompt --edit <name>` | Edit a prompt file |
 | `suncli prompt --path` | Show prompts directory |
 | `suncli --version` | Show version |
+| `suncli --debug` | Enable debug mode with detailed logging |
 
 ## Chat Commands
 
@@ -277,10 +401,16 @@ During an interactive chat session:
 | `/clear` | Clear conversation history (system prompt preserved) |
 | `/new` | Start a new conversation |
 | `/config` | Show current configuration |
+| `/history` | Show recent input history |
+| `/history clear` | Clear all input history |
 | `/plan` | Enter plan mode for complex tasks |
 | `/approve` | Approve and execute the current plan |
 | `/modify` | Request plan modifications |
 | `/cancel` | Cancel plan mode |
+| `/tasks` | Show the persistent task board |
+| `/task <id> <status>` | Update task status (`pending` / `in_progress` / `completed`) |
+| `/next` | Interrupt current output and switch to next queued message |
+| `Ctrl+O` | Shortcut to interrupt and switch to next queued message |
 
 ## Shell Commands
 
@@ -330,6 +460,30 @@ suncli config --api-key sk-xxx --base-url https://api.openai.com/v1 --model gpt-
 | `SUN_BASE_URL` | API base URL | `https://api.openai.com/v1` |
 | `SUN_MODEL` | Model to use | `gpt-4o-mini` |
 | `SUN_TEMPERATURE` | Sampling temperature | `0.7` |
+
+## Advanced Features
+
+### Context Compression
+
+For long conversations, Sun CLI automatically compresses older messages to stay within token limits, while preserving the system prompt and recent context.
+
+### Rate Limit Retry
+
+If the API returns a 429 (rate limited) error, Sun CLI automatically retries with exponential backoff.
+
+### Auto-Confirm Mode (Yolo Mode)
+
+Skip all confirmation prompts for fully automated workflows:
+
+```bash
+suncli config --yolo
+```
+
+⚠️ **Warning:** In this mode, file modifications and Git operations execute without asking. Use with caution!
+
+### Project Context Detection
+
+On startup, Sun CLI automatically detects your project type and loads relevant context. If an `AGENTS.md` file exists in your project root, its instructions are automatically loaded into the system prompt.
 
 ## Development
 
