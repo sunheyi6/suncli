@@ -131,6 +131,7 @@ SLASH_COMMANDS = [
     ("/modify", "修改当前计划", "修改当前计划"),
     ("/cancel", "取消计划模式", "取消计划模式"),
     ("/tasks", "显示任务板", "显示任务板"),
+    ("/team", "显示团队状态", "显示团队状态"),
     ("/task <id> <status>", "更新任务状态", "更新任务状态"),
     ("/next", "中断当前输出并切换到下一条排队消息", "中断当前输出并切换到下一条排队消息"),
     ("/exit", "退出 Sun CLI", "退出 Sun CLI"),
@@ -1129,8 +1130,18 @@ async def _chat_async() -> None:
     worker_task = asyncio.create_task(_message_worker())
 
     try:
+        def _print_teammate_outputs():
+            """Print any output from background teammates."""
+            for sess in all_sessions:
+                outputs = sess.team.drain_output()
+                for line in outputs:
+                    console.print(f"[dim]{line}[/dim]")
+        
         while True:
             try:
+                # Check teammate outputs before prompting
+                _print_teammate_outputs()
+                
                 # Get user input (multiline)
                 user_input = await get_multiline_input()
 
@@ -1232,6 +1243,22 @@ async def _chat_async() -> None:
                             session.cancel_plan_mode()
                         else:
                             console.print("[yellow]当前不在计划模式。[/yellow]")
+                    elif user_input == "/team":
+                        status = session.team.get_status()
+                        from rich.table import Table
+                        table = Table(show_header=True, header_style="bold", border_style="cyan")
+                        table.add_column("属性", style="cyan")
+                        table.add_column("值", style="green")
+                        table.add_row("Team", status["team_name"])
+                        table.add_row("Members", str(status["member_count"]))
+                        table.add_row("Active", str(status["active_teammates"]))
+                        table.add_row("Running", ", ".join(status["running"]) or "none")
+                        table.add_row("Pending Requests", str(status["pending_requests"]))
+                        console.print(Panel(
+                            table,
+                            title="Team Status",
+                            border_style="blue"
+                        ))
                     elif user_input == "/tasks":
                         console.print(Panel(
                             session.list_tasks_text(),
@@ -1289,6 +1316,12 @@ async def _chat_async() -> None:
             except EOFError:
                 break
     finally:
+        # Stop all background teammates
+        for sess in all_sessions:
+            try:
+                sess.team.stop_all()
+            except Exception:
+                pass
         await message_queue.join()
         await message_queue.put(None)
         await worker_task

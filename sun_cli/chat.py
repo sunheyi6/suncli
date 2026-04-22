@@ -498,17 +498,21 @@ class ChatSession:
     
     # ========== s15-s17: Team ==========
     
-    def _handle_team_spawn(self, name: str, role: str, prompt: str) -> str:
+    async def _handle_team_spawn(self, name: str, role: str, prompt: str) -> str:
         """Handle team_spawn tool."""
         from .task_manager import TaskManager
         
         task_board = TaskManager()
         teammate = self.team.spawn(name, role, prompt, task_board)
         
-        # Start teammate in background (would need async handling in production)
-        return f"Teammate spawned: {name} (role: {role})\nStatus: {teammate.status.value}"
+        # Start teammate in background
+        try:
+            self.team.start_teammate(name, prompt)
+            return f"Teammate spawned and running in background: {name} (role: {role})"
+        except Exception as e:
+            return f"Teammate spawned but failed to start: {e}"
     
-    def _handle_team_send(self, to: str, content: str) -> str:
+    async def _handle_team_send(self, to: str, content: str) -> str:
         """Handle team_send tool."""
         msg_id = self.team.send_message("lead", to, content)
         return f"Message sent to {to}: {msg_id}"

@@ -5,7 +5,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Optional, List
 
 import httpx
 
@@ -69,16 +69,77 @@ class Teammate:
         self.status = TeammateStatus.WORKING
         self.messages: list[dict] = []
         self.idle_time = 0
+        self.output_log: Optional[List[str]] = None  # Shared output buffer
         
         # Initial system prompt
         self._init_messages()
     
+    # Role-specific system prompts (Chinese for Chinese-speaking users)
+    ROLE_PROMPTS: dict[str, str] = {
+        "coder": """你是一名资深软件工程师。你的任务是编写干净、正确、可维护的代码。
+
+工作准则：
+- 遵循项目现有的代码风格和约定
+- 编写模块化、结构清晰的代码
+- 使用清晰的变量名和函数名
+- 在适当的地方添加错误处理
+- 修改完成后，通过读取文件验证结果
+- 报告你修改了哪些文件以及原因
+
+你拥有的工具：read、write、edit、bash。
+使用这些工具完成你的工作。""",
+        "tester": """你是一名质量保障工程师。你的任务是编写测试并验证代码是否正确工作。
+
+工作准则：
+- 编写全面的测试用例，覆盖正常情况、边界情况和异常情况
+- 使用项目现有的测试框架（pytest、jest 等）
+- 编写测试后运行它们并报告结果
+- 如果测试失败，分析错误并判断是测试问题还是代码 bug
+- 报告测试覆盖率和未覆盖的边界情况
+
+你拥有的工具：read、write、edit、bash。
+使用这些工具完成你的工作。""",
+        "reviewer": """你是一名资深代码审查员。你的任务是审查代码的质量、正确性和可维护性。
+
+工作准则：
+- 检查 bug、逻辑错误和安全问题
+- 发现代码异味：重复、过度复杂的函数、不清晰的命名
+- 验证代码是否遵循语言/框架的最佳实践
+- 给出具体的改进建议，附带代码示例
+- 保持建设性：解释 WHY 有问题，而不只是指出有问题
+- **不要自己重写代码** -- 提供审查意见供 coder 处理
+
+你拥有的工具：read、write、edit、bash。
+使用这些工具完成你的工作。""",
+        "docs": """你是一名技术文档工程师。你的任务是编写清晰、准确的技术文档。
+
+工作准则：
+- 面向目标受众写作（用户、开发者或贡献者）
+- 使用清晰、简洁的语言，避免不必要的术语
+- 在有帮助的地方包含示例
+- 代码变更影响文档时，更新现有文档
+- 保持格式和结构的一致性
+- 完成前检查链接、代码示例和格式
+
+你拥有的工具：read、write、edit、bash。
+使用这些工具完成你的工作。""",
+        "researcher": """你是一名技术研究员。你的任务是调查问题、分析数据、收集信息。
+
+工作准则：
+- 需要时通过网络搜索获取当前、准确的信息
+- 仔细阅读源代码、日志和配置文件
+- 用证据清晰地总结发现
+- 区分事实和假设
+- 如果答案不确定，如实说明并解释原因
+- 基于研究结果提供可执行的建议
+
+你拥有的工具：read、write、edit、bash、web_search。
+使用这些工具完成你的工作。""",
+    }
+
     def _init_messages(self):
         """Initialize message history with identity."""
-        self.messages = [
-            {
-                "role": "system",
-                "content": f"""You are '{self.name}', a {self.role} on team '{self.team_name}'.
+        role_prompt = self.ROLE_PROMPTS.get(self.role.lower(), f"""You are '{self.name}', a {self.role} on team '{self.team_name}'.
 
 Your responsibilities:
 1. Complete assigned tasks using available tools
@@ -87,47 +148,84 @@ Your responsibilities:
 4. Follow team protocols for approvals
 
 You have access to tools: read, write, edit, bash.
-Use them to accomplish your work."""
+Use them to accomplish your work.""")
+
+        self.messages = [
+            {
+                "role": "system",
+                "content": f"""You are '{self.name}' on team '{self.team_name}'.
+
+{role_prompt}"""
             }
         ]
     
+    def _log(self, message: str):
+        """Append output to shared log if available."""
+        if self.output_log is not None:
+            self.output_log.append(f"[{self.name}] {message}")
+
     async def run(self, initial_prompt: str):
         """Main lifecycle loop.
         
         Args:
             initial_prompt: Initial task
         """
+        self._log(f"Started with task: {initial_prompt[:60]}...")
+        
         # Start with initial work
         self.messages.append({"role": "user", "content": initial_prompt})
         
+        shutdown_reason = "unknown"
         while True:
             # WORK PHASE
-            should_idle = await self._work_phase()
-            if not should_idle:
+            phase_result = await self._work_phase()
+            if phase_result == "error_fatal":
+                shutdown_reason = "LLM call failed repeatedly"
                 break
+            if phase_result == "shutdown":
+                shutdown_reason = "tool errors exhausted"
+                break
+            if phase_result == "done":
+                pass  # Go to idle
             
             # IDLE PHASE
             should_resume = await self._idle_phase()
             if not should_resume:
                 self.status = TeammateStatus.SHUTDOWN
+                shutdown_reason = "idle timeout"
                 break
             
             self.status = TeammateStatus.WORKING
         
-        return f"{self.name} shutdown after {self.idle_time}s idle"
+        self._log(f"Shutdown: {shutdown_reason}")
+        return f"{self.name} shutdown: {shutdown_reason}"
     
-    async def _work_phase(self, max_iterations: int = 50) -> bool:
+    async def _work_phase(self, max_iterations: int = 50) -> str:
         """Execute work until done or need to idle.
         
         Returns:
-            True if should transition to idle, False if should shutdown
+            "done" - work completed, go to idle
+            "shutdown" - too many errors, shutdown
+            "error_fatal" - LLM call failed, shutdown
         """
+        consecutive_errors = 0
+        
         for iteration in range(max_iterations):
             # Call LLM
             response = await self._call_llm()
             
             if not response:
-                return False  # Error, shutdown
+                # LLM call failed -- report and try once more
+                self._report_issue_to_lead(
+                    f"LLM call failed during work phase (iteration {iteration + 1}). "
+                    f"This may be due to API errors or rate limiting."
+                )
+                # Try once more after a short delay
+                await asyncio.sleep(2)
+                response = await self._call_llm()
+                if not response:
+                    self._log("LLM call failed twice, shutting down")
+                    return "error_fatal"
             
             # Check for tool calls
             tool_calls = ToolCallParser.parse(response)
@@ -135,24 +233,43 @@ Use them to accomplish your work."""
             if not tool_calls:
                 # Work complete
                 self.messages.append({"role": "assistant", "content": response})
-                return True  # Go to idle
+                self._log(f"Work completed: {response[:100]}...")
+                return "done"
             
             # Execute tools
             self.messages.append({"role": "assistant", "content": response})
             
             results = []
+            error_count = 0
             for call in tool_calls:
-                result = ToolExecutor.execute(call)
+                result = ToolExecutor.execute_native(call)
+                if isinstance(result, str) and result.strip().lower().startswith("error"):
+                    error_count += 1
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": call.id,
                     "content": result if isinstance(result, str) else str(result),
                 })
             
+            # Track consecutive error rounds
+            if error_count == len(tool_calls) and tool_calls:
+                consecutive_errors += 1
+                self._log(f"All tools failed this round ({consecutive_errors}/3)")
+                if consecutive_errors >= 3:
+                    self._report_issue_to_lead(
+                        f"Tools failed {consecutive_errors} consecutive rounds. "
+                        f"Last error: {results[-1]['content'][:200] if results else 'unknown'}. "
+                        f"I need guidance to proceed."
+                    )
+                    return "shutdown"
+            else:
+                consecutive_errors = 0
+            
             self.messages.append({"role": "user", "content": json.dumps(results)})
         
         # Max iterations
-        return True
+        self._log("Reached max work iterations, going idle")
+        return "done"
     
     async def _idle_phase(self) -> bool:
         """Poll for new work.
@@ -193,7 +310,7 @@ Use them to accomplish your work."""
                     return True
             
             # 3. Wait
-            time.sleep(self.POLL_INTERVAL)
+            await asyncio.sleep(self.POLL_INTERVAL)
             elapsed += self.POLL_INTERVAL
         
         # Timeout - shutdown
@@ -212,6 +329,20 @@ Use them to accomplish your work."""
                 "content": f"I am {self.name}. Continuing."
             })
     
+    def _report_issue_to_lead(self, message: str):
+        """Report a problem to the team lead via mailbox and output log."""
+        self._log(f"REPORT TO LEAD: {message}")
+        try:
+            if self.mailbox:
+                self.mailbox.send(
+                    from_agent=self.name,
+                    to_agent="lead",
+                    content=f"[HELP NEEDED] {message}",
+                    msg_type="help_request",
+                )
+        except Exception:
+            pass
+
     async def _call_llm(self) -> Optional[str]:
         """Call LLM with current messages."""
         try:
@@ -227,7 +358,8 @@ Use them to accomplish your work."""
             response.raise_for_status()
             data = response.json()
             return data["choices"][0]["message"]["content"] or ""
-        except Exception:
+        except Exception as e:
+            self._log(f"LLM call error: {str(e)[:100]}")
             return None
     
     def to_dict(self) -> dict:

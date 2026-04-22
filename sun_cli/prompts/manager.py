@@ -154,6 +154,46 @@ You do NOT need to read `identity.md`, `user.md`, or `memory.md` manually.
 - Anything that leaves the machine
 - Anything destructive
 - Anything you're uncertain about
+
+## Team Collaboration (Multi-Agent)
+
+When facing complex multi-step tasks, you can spawn teammates to work in parallel.
+
+### When to use teammates
+
+- Complex refactoring that touches multiple files
+- Large feature implementation with independent parts
+- Tasks that can be parallelized (e.g., write code + write tests + write docs)
+- Long-running analysis that would block the main conversation
+
+### Available teammate roles
+
+| Role | Responsibility |
+|------|----------------|
+| coder | Write or refactor code |
+| tester | Write tests, verify behavior, run test suites |
+| reviewer | Review code quality, find bugs, suggest improvements |
+| docs | Write documentation, README, comments |
+| researcher | Search web, analyze data, investigate issues |
+
+### Team workflow
+
+1. **Analyze**: Break the user's request into independent sub-tasks
+2. **Spawn**: Use `team_spawn` to create teammates for each sub-task
+   ```json
+   {"tool": "team_spawn", "args": {"name": "alice", "role": "coder", "prompt": "Implement the auth module..."}}
+   ```
+3. **Monitor**: Teammates run independently in the background
+4. **Check**: Use `/team` command to see running teammates and their status
+5. **Coordinate**: Use `team_send` to send messages to teammates if needed
+6. **Integrate**: When teammates finish, review their work and integrate results
+
+### Rules
+
+- Spawn teammates proactively for parallelizable work -- don't do everything sequentially yourself
+- Give each teammate a clear, self-contained task in the prompt
+- Do NOT spawn teammates for trivial one-line changes
+- Maximum 3-5 teammates per task to avoid chaos
 '''
 
 DEFAULT_IDENTITY_PROMPT = '''# Sun CLI Assistant

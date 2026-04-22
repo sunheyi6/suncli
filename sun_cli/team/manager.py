@@ -1,5 +1,6 @@
 """Team manager - coordinates teammates and team state (s15-s17)."""
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Optional
@@ -48,6 +49,12 @@ class TeamManager:
         
         # Active teammates
         self._teammates: dict[str, Teammate] = {}
+        
+        # Background tasks
+        self._running_tasks: dict[str, asyncio.Task] = {}
+        
+        # Shared output log (collected by main loop)
+        self.output_log: list[str] = []
         
         # Load config
         self._config = self._load_config()
@@ -115,6 +122,7 @@ class TeamManager:
         )
         
         self._teammates[name] = teammate
+        teammate.output_log = self.output_log
         return teammate
     
     def get_teammate(self, name: str) -> Optional[Teammate]:
@@ -208,12 +216,66 @@ class TeamManager:
         
         return success
     
+    def start_teammate(self, name: str, initial_prompt: str) -> asyncio.Task:
+        """Start a teammate running in the background.
+        
+        Args:
+            name: Teammate name
+            initial_prompt: Initial task prompt
+            
+        Returns:
+            The asyncio.Task running the teammate lifecycle
+        """
+        teammate = self._teammates.get(name)
+        if not teammate:
+            raise ValueError(f"Teammate not found: {name}")
+        
+        if name in self._running_tasks and not self._running_tasks[name].done():
+            raise ValueError(f"Teammate {name} is already running")
+        
+        task = asyncio.create_task(teammate.run(initial_prompt))
+        self._running_tasks[name] = task
+        return task
+    
+    def stop_teammate(self, name: str) -> bool:
+        """Stop a running teammate.
+        
+        Args:
+            name: Teammate name
+            
+        Returns:
+            True if stopped successfully
+        """
+        task = self._running_tasks.get(name)
+        if task and not task.done():
+            task.cancel()
+            return True
+        return False
+    
+    def stop_all(self):
+        """Stop all running teammates."""
+        for name, task in list(self._running_tasks.items()):
+            if not task.done():
+                task.cancel()
+        self._running_tasks.clear()
+    
+    def drain_output(self) -> list[str]:
+        """Retrieve and clear collected output from teammates.
+        
+        Returns:
+            List of output lines since last drain
+        """
+        lines = self.output_log.copy()
+        self.output_log.clear()
+        return lines
+    
     def get_status(self) -> dict:
         """Get team status summary."""
         return {
             "team_name": self._config["team_name"],
             "member_count": len(self._config["members"]),
             "active_teammates": len(self._teammates),
+            "running": [name for name, t in self._running_tasks.items() if not t.done()],
             "pending_requests": len([
                 r for r in self.protocol._requests.values()
                 if r.status == "pending"
