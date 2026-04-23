@@ -28,6 +28,8 @@ from .skills import get_skill_manager, SkillContext
 from .skills.git import GitSkill
 from .skills.prompt import PromptSkill
 from .skills.config import ConfigSkill
+from .skills_v2 import get_skill_manager_v2
+from .skills_v2.tools import handle_skill_view, handle_skill_manage
 from .plan_mode import PlanModeManager, PlanMode
 from .context_collector import get_context_collector
 from .logging_config import get_logger
@@ -60,6 +62,9 @@ from .team import get_team_manager
 
 # s19: MCP
 from .mcp import MCPClient, PluginLoader
+
+# s20: Self-Improving
+from .nudge import NudgeEngine
 
 
 class ChatSession:
@@ -122,7 +127,10 @@ class ChatSession:
         self.background = get_background_manager()
         
         # s09: Memory manager
-        self.memory = get_memory_manager()
+        self.memory = get_memory_manager(
+            memory_char_limit=self.config.memory_char_limit,
+            user_char_limit=self.config.user_char_limit
+        )
         
         # s12/s18: Worktree manager
         self.worktree = WorktreeManager()
@@ -136,6 +144,15 @@ class ChatSession:
         # s19: MCP client
         self.mcp_client = MCPClient()
         self._mcp_connected = False
+        
+        # s20: Nudge Engine (Self-Improving)
+        self.nudge = NudgeEngine(
+            client=self.client,
+            config=self.config,
+            memory_nudge_interval=getattr(self.config, 'memory_nudge_interval', 10),
+            skill_nudge_interval=getattr(self.config, 'skill_nudge_interval', 10),
+            enabled=getattr(self.config, 'self_improving_enabled', True)
+        )
         
         # Tool executor with custom handlers
         self.tool_executor = ToolExecutor()
@@ -178,6 +195,10 @@ class ChatSession:
         # s09: Memory
         self.tool_executor.register_handler("save_memory", self._handle_save_memory)
         self.tool_executor.register_handler("load_memory", self._handle_load_memory)
+        
+        # s20: Skill v2 (Self-Improving)
+        self.tool_executor.register_handler("skill_view", self._handle_skill_view)
+        self.tool_executor.register_handler("skill_manage", self._handle_skill_manage)
     
     # ========== Web Search ==========
 
@@ -417,6 +438,11 @@ class ChatSession:
         if memory_section:
             system_prompt = f"{system_prompt}\n\n{memory_section}"
         
+        # s20: Load skill index (progressive loading - only index, not full content)
+        skills_index = self.skill_manager_v2.build_index_prompt()
+        if skills_index:
+            system_prompt = f"{system_prompt}\n\n{skills_index}"
+        
         # Combine all prompts
         if plan_mode_prompt:
             system_prompt = f"{system_prompt}\n\n{plan_mode_prompt}"
@@ -606,6 +632,9 @@ class ChatSession:
     
     async def stream_message(self, content: str, max_tool_iterations: int = 10) -> str:
         """Send a message with full multi-round tool calling."""
+        # s20: Count user turn for memory nudge
+        self.nudge.on_user_turn()
+        
         # Add user message
         self.conversation.add_message(MessageRole.USER, content)
 
@@ -735,6 +764,10 @@ class ChatSession:
                 if cleaned_content:
                     self.console.print(Markdown(cleaned_content))
                 state["transition_reason"] = None
+                
+                # s20: Trigger background review after final response
+                await self._trigger_background_review()
+                
                 return cleaned_content
             
             # Execute tool calls
@@ -776,6 +809,9 @@ class ChatSession:
             # Add assistant message
             self.conversation.add_message(MessageRole.ASSISTANT, full_content)
             
+            # s20: Count tool iteration for skill nudge
+            self.nudge.on_tool_iteration()
+            
             # Add tool results
             tool_result_blocks = self._build_tool_result_blocks(tool_calls, tool_results)
             _get_logger().debug(f"构建工具结果块:\n{json.dumps(tool_result_blocks, indent=2, ensure_ascii=False)}")
@@ -799,6 +835,10 @@ class ChatSession:
         self.conversation.add_message(MessageRole.ASSISTANT, cleaned_final)
         if cleaned_final:
             self.console.print(Markdown(cleaned_final))
+        
+        # s20: Trigger background review after final response
+        await self._trigger_background_review()
+        
         return cleaned_final
 
     @staticmethod
@@ -1394,6 +1434,27 @@ class ChatSession:
             deduped_steps.append(step)
         
         return title, description, deduped_steps
+    
+    # ========== s20: Self-Improving Helpers ==========
+    
+    async def _trigger_background_review(self) -> None:
+        """Trigger background review after user response is complete."""
+        try:
+            messages = self.conversation.to_openai_messages()
+            await self.nudge.maybe_trigger_review(messages, quiet=True)
+        except Exception:
+            pass
+    
+    def _handle_skill_view(self, name: str) -> str:
+        """Handle skill_view tool."""
+        return handle_skill_view(name)
+    
+    def _handle_skill_manage(self, **kwargs) -> str:
+        """Handle skill_manage tool."""
+        result = handle_skill_manage(**kwargs)
+        # Reset nudge counters when agent actively manages skills
+        self.nudge.on_skill_managed()
+        return result
     
     async def close(self) -> None:
         """Close the HTTP client and cleanup."""

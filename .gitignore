@@ -33,6 +33,11 @@ ENV/
 *.swo
 *~
 
+# Node.js / Next.js (website/)
+node_modules/
+.next/
+out/
+
 # Project specific
 .env
 .api_config

@@ -219,6 +219,42 @@ WORKTREE_CLOSEOUT_TOOL = ToolDefinition(
     ],
 )
 
+# s20: Self-Improving Skills (v2)
+SKILL_VIEW_TOOL = ToolDefinition(
+    name="skill_view",
+    description="Load a skill by name to see its full content (Steps, Pitfalls, When to use). Use this when a skill in the index seems relevant to the current task.",
+    parameters=[
+        ToolParameter("name", "string", "Name of the skill to load"),
+    ],
+)
+
+SKILL_MANAGE_TOOL = ToolDefinition(
+    name="skill_manage",
+    description=(
+        "Manage skills (create, update/patch, delete). Skills are your procedural memory — "
+        "reusable approaches for recurring task types.\n\n"
+        "Create when: complex task succeeded (5+ tool calls), errors overcome, "
+        "user-corrected approach worked, non-trivial workflow discovered, "
+        "or user asks you to remember a procedure.\n"
+        "Update when: instructions stale/wrong, OS-specific failures, "
+        "missing steps or pitfalls found during use. "
+        "If you used a skill and hit issues not covered by it, "
+        "patch it immediately with skill_manage(action='patch') — don't wait to be asked.\n\n"
+        "After difficult/iterative tasks, offer to save as a skill. "
+        "Skip for simple one-offs."
+    ),
+    parameters=[
+        ToolParameter("action", "string", "One of: create, patch, delete, list, stats"),
+        ToolParameter("name", "string", "Skill name", required=False),
+        ToolParameter("category", "string", "Category for create (e.g., devops, software-development)", required=False),
+        ToolParameter("description", "string", "Short one-line description", required=False),
+        ToolParameter("content", "string", "Full markdown content with Steps, Pitfalls, When to use sections", required=False),
+        ToolParameter("old_string", "string", "Exact text to find for patch", required=False),
+        ToolParameter("new_string", "string", "Replacement text for patch", required=False),
+        ToolParameter("version", "string", "Semantic version (default: 1.0.0)", required=False),
+    ],
+)
+
 # Web Search tool (DuckDuckGo)
 WEB_SEARCH_TOOL = ToolDefinition(
     name="web_search",
@@ -258,6 +294,8 @@ ALL_TOOLS: list[ToolDefinition] = [
     WORKTREE_CREATE_TOOL,
     WORKTREE_ENTER_TOOL,
     WORKTREE_CLOSEOUT_TOOL,
+    SKILL_VIEW_TOOL,
+    SKILL_MANAGE_TOOL,
 ]
 
 
@@ -339,6 +377,14 @@ def build_tools_prompt() -> str:
         "4. **Verify results**: After editing, read the file again",
         "5. **Handle errors**: If a tool fails, analyze the error message and follow the correction hint provided",
         "6. **Weather questions**: For weather/current conditions, use `weather_now` first and avoid guessing",
+        "",
+        "## Skill System (Self-Improving)",
+        "",
+        "Skills are procedural memory — reusable playbooks for recurring tasks.",
+        "- **Memory** stores facts (what you know). **Skills** store procedures (how to do things).",
+        "- If you've discovered a new way to do something, save it as a skill.",
+        "- Skills that aren't maintained become liabilities — patch them when you find issues.",
+        "- Use `skill_view` to load a skill's full content before following it.",
         "",
     ])
 

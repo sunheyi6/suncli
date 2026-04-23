@@ -106,6 +106,13 @@ class Config(BaseModel):
     compact_trigger_messages: int = Field(default=24, ge=10, description="Trigger compaction when message count exceeds this value")
     compact_keep_recent: int = Field(default=10, ge=4, description="How many recent messages to keep uncompressed")
     show_tool_traces: bool = Field(default=False, description="Show tool execution trace panels in chat")
+    
+    # s20: Self-Improving config
+    self_improving_enabled: bool = Field(default=True, description="Enable self-improving memory and skill evolution")
+    memory_nudge_interval: int = Field(default=10, ge=1, description="User turns between memory reviews")
+    skill_nudge_interval: int = Field(default=10, ge=1, description="Tool iterations between skill reviews")
+    memory_char_limit: int = Field(default=2200, ge=500, description="Max chars for project/reference memories")
+    user_char_limit: int = Field(default=1375, ge=300, description="Max chars for user memories")
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -136,6 +143,11 @@ class Config(BaseModel):
             compact_trigger_messages=int(os.getenv("SUN_COMPACT_TRIGGER_MESSAGES", "24")),
             compact_keep_recent=int(os.getenv("SUN_KEEP_RECENT", "10")),
             show_tool_traces=os.getenv("SUN_SHOW_TOOL_TRACES", "").lower() in ("true", "1", "yes"),
+            self_improving_enabled=os.getenv("SUN_SELF_IMPROVING", "true").lower() in ("true", "1", "yes"),
+            memory_nudge_interval=int(os.getenv("SUN_MEMORY_NUDGE_INTERVAL", "10")),
+            skill_nudge_interval=int(os.getenv("SUN_SKILL_NUDGE_INTERVAL", "10")),
+            memory_char_limit=int(os.getenv("SUN_MEMORY_CHAR_LIMIT", "2200")),
+            user_char_limit=int(os.getenv("SUN_USER_CHAR_LIMIT", "1375")),
         )
     
     @property
@@ -215,6 +227,11 @@ def update_config(**kwargs) -> Config:
         "compact_trigger_messages": "SUN_COMPACT_TRIGGER_MESSAGES",
         "compact_keep_recent": "SUN_KEEP_RECENT",
         "show_tool_traces": "SUN_SHOW_TOOL_TRACES",
+        "self_improving_enabled": "SUN_SELF_IMPROVING",
+        "memory_nudge_interval": "SUN_MEMORY_NUDGE_INTERVAL",
+        "skill_nudge_interval": "SUN_SKILL_NUDGE_INTERVAL",
+        "memory_char_limit": "SUN_MEMORY_CHAR_LIMIT",
+        "user_char_limit": "SUN_USER_CHAR_LIMIT",
     }
     
     # Update API config file

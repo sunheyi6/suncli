@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from ..security.scanner import scan_memory_content
+
 
 # Memory types - only save info that:
 # 1. Has value across sessions
@@ -40,18 +42,34 @@ class MemoryManager:
     │   └── conventions.md
     └── reference/
         └── external_resources.md
+    
+    Capacity-limited: forces the agent to prioritize important information.
     """
     
-    def __init__(self, root: Path = None):
+    def __init__(
+        self,
+        root: Path = None,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        enable_security_scan: bool = True
+    ):
         """Initialize memory manager.
         
         Args:
             root: Project root directory
+            memory_char_limit: Max chars for project/reference memories (Hermes-style)
+            user_char_limit: Max chars for user memories
+            enable_security_scan: Whether to scan content for threats
         """
         if root is None:
             root = Path.cwd()
         self.root = Path(root).resolve()
         self.memory_dir = self.root / ".memory"
+        
+        # Capacity limits (Hermes-style)
+        self.memory_char_limit = memory_char_limit
+        self.user_char_limit = user_char_limit
+        self.enable_security_scan = enable_security_scan
         
         # Create directories for each type
         for mem_type in VALID_TYPES:
@@ -75,14 +93,43 @@ class MemoryManager:
                 encoding="utf-8"
             )
     
+    def _get_char_limit(self, mem_type: str) -> int:
+        """Get character limit for a memory type."""
+        if mem_type == "user":
+            return self.user_char_limit
+        return self.memory_char_limit
+    
+    def _get_current_usage(self, mem_type: str) -> tuple[int, list[dict]]:
+        """Get current character count and entries for a memory type."""
+        entries = []
+        total_chars = 0
+        type_dir = self.memory_dir / mem_type
+        if type_dir.exists():
+            for file_path in type_dir.glob("*.md"):
+                try:
+                    text = file_path.read_text(encoding="utf-8")
+                    total_chars += len(text)
+                    # Parse name from frontmatter
+                    match = re.search(r'^name:\s*(.+)$', text, re.MULTILINE)
+                    entry_name = match.group(1).strip() if match else file_path.stem
+                    entries.append({
+                        "name": entry_name,
+                        "file": file_path,
+                        "chars": len(text),
+                        "content": text
+                    })
+                except Exception:
+                    pass
+        return total_chars, entries
+    
     def save(
         self, 
         name: str, 
         mem_type: str, 
         content: str, 
         description: str = ""
-    ) -> str:
-        """Save a memory entry.
+    ) -> dict:
+        """Save a memory entry with capacity limits and security scanning.
         
         Args:
             name: Entry name (used as filename)
@@ -91,10 +138,50 @@ class MemoryManager:
             description: Short description
             
         Returns:
-            Path to saved file
+            dict with success status, path, and usage info
         """
         if mem_type not in VALID_TYPES:
             raise ValueError(f"Invalid memory type: {mem_type}. Must be one of {VALID_TYPES}")
+        
+        # Security scan
+        if self.enable_security_scan:
+            result = scan_memory_content(content)
+            if not result.allowed:
+                return {
+                    "success": False,
+                    "error": f"Security scan blocked: {result.reason}",
+                    "path": None
+                }
+        
+        # Check capacity
+        limit = self._get_char_limit(mem_type)
+        current_usage, entries = self._get_current_usage(mem_type)
+        
+        frontmatter_len = len(f"""---
+name: {name}
+type: {mem_type}
+description: {description}
+created_at: 2024-01-01T00:00:00
+updated_at: 2024-01-01T00:00:00
+---
+
+""")
+        new_total = current_usage + len(content) + frontmatter_len
+        
+        if new_total > limit:
+            return {
+                "success": False,
+                "error": (
+                    f"Memory at {current_usage:,}/{limit:,} chars. "
+                    f"Adding this entry ({len(content)} chars) would exceed the limit. "
+                    f"Replace or remove existing entries first."
+                ),
+                "current_entries": [
+                    {"name": e["name"], "chars": e["chars"]} for e in entries
+                ],
+                "usage": f"{current_usage:,}/{limit:,}",
+                "path": None
+            }
         
         # Sanitize name
         safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
@@ -118,7 +205,12 @@ updated_at: {now}
         # Update index
         self._update_index(name, mem_type, description)
         
-        return str(file_path)
+        new_usage, _ = self._get_current_usage(mem_type)
+        return {
+            "success": True,
+            "path": str(file_path),
+            "usage": f"{new_usage:,}/{limit:,}"
+        }
     
     def load(self, name: str, mem_type: str = None) -> Optional[MemoryEntry]:
         """Load a specific memory entry.
@@ -318,9 +410,14 @@ updated_at: {now}
 _memory_manager: Optional[MemoryManager] = None
 
 
-def get_memory_manager() -> MemoryManager:
-    """Get or create global memory manager."""
+def get_memory_manager(root: Path = None, **kwargs) -> MemoryManager:
+    """Get or create global memory manager.
+    
+    Args:
+        root: Project root directory
+        **kwargs: Additional arguments passed to MemoryManager constructor
+    """
     global _memory_manager
     if _memory_manager is None:
-        _memory_manager = MemoryManager()
+        _memory_manager = MemoryManager(root, **kwargs)
     return _memory_manager
