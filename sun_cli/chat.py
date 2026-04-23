@@ -28,8 +28,8 @@ from .skills import get_skill_manager, SkillContext
 from .skills.git import GitSkill
 from .skills.prompt import PromptSkill
 from .skills.config import ConfigSkill
-from .skills_v2 import get_skill_manager_v2
-from .skills_v2.tools import handle_skill_view, handle_skill_manage
+from .skills.library import get_skill_library
+from .skills.handlers import handle_skill_view, handle_skill_manage
 from .plan_mode import PlanModeManager, PlanMode
 from .context_collector import get_context_collector
 from .logging_config import get_logger
@@ -154,12 +154,16 @@ class ChatSession:
             enabled=getattr(self.config, 'self_improving_enabled', True)
         )
         
+        # s20: Skill library
+        self.skill_library = get_skill_library()
+        
         # Tool executor with custom handlers
         self.tool_executor = ToolExecutor()
         self._register_custom_tools()
         
         # Initialize with system prompt
         self._initialize_system_prompt()
+        self._latest_user_input = ""
     
     def _register_custom_tools(self):
         """Register extended tool handlers."""
@@ -439,7 +443,7 @@ class ChatSession:
             system_prompt = f"{system_prompt}\n\n{memory_section}"
         
         # s20: Load skill index (progressive loading - only index, not full content)
-        skills_index = self.skill_manager_v2.build_index_prompt()
+        skills_index = self.skill_library.build_index_prompt()
         if skills_index:
             system_prompt = f"{system_prompt}\n\n{skills_index}"
         
@@ -454,18 +458,12 @@ class ChatSession:
     
     # ========== s04: Subagent ==========
     
-    def _handle_subagent(self, prompt: str, tools: list = None) -> str:
+    async def _handle_subagent(self, prompt: str, tools: list = None) -> str:
         """Handle subagent tool call."""
-        import asyncio
-        
         self.console.print(f"[dim]Spawning subagent for: {prompt[:50]}...[/dim]")
         
-        # Run subagent synchronously (since we're in tool context)
         try:
-            loop = asyncio.get_event_loop()
-            result = loop.run_until_complete(
-                run_subagent(self.client, self.config, prompt, tools)
-            )
+            result = await run_subagent(self.client, self.config, prompt, tools)
             return f"Subagent result:\n{result}"
         except Exception as e:
             return f"Subagent error: {e}"
@@ -634,6 +632,7 @@ class ChatSession:
         """Send a message with full multi-round tool calling."""
         # s20: Count user turn for memory nudge
         self.nudge.on_user_turn()
+        self._latest_user_input = content or ""
         
         # Add user message
         self.conversation.add_message(MessageRole.USER, content)
@@ -714,6 +713,30 @@ class ChatSession:
         has_scope = any(k in text for k in folder_scope_keywords) or any(k in lower for k in folder_scope_keywords)
         has_intent = any(k in text for k in analysis_intent_keywords) or any(k in lower for k in analysis_intent_keywords)
         return has_scope and has_intent
+
+    @staticmethod
+    def _is_capability_inquiry(content: str) -> bool:
+        """Detect "can you / do you support" style inquiry (not execution request)."""
+        if not content:
+            return False
+
+        text = content.strip()
+        lower = text.lower()
+
+        inquiry_keywords = (
+            "你可以", "能不能", "是否可以", "支持", "会不会", "可以吗",
+            "can you", "do you support", "are you able", "what can you do",
+        )
+        execution_keywords = (
+            "请", "帮我", "执行", "运行", "创建", "修改", "修复", "查看", "排查",
+            "please", "help me", "run", "create", "edit", "fix", "implement",
+        )
+
+        has_inquiry = any(k in text for k in inquiry_keywords) or any(k in lower for k in inquiry_keywords)
+        has_execution = any(k in text for k in execution_keywords) or any(k in lower for k in execution_keywords)
+        has_question = ("?" in text) or ("？" in text) or ("吗" in text)
+
+        return has_inquiry and has_question and not has_execution
     
     async def _run_tool_loop(self, max_iterations: int = 10) -> str:
         """Run the multi-round tool calling loop (s01 + enhancements)."""
@@ -752,6 +775,22 @@ class ChatSession:
             _get_logger().debug(f"解析到 {len(tool_calls)} 个工具调用")
             for i, call in enumerate(tool_calls):
                 _get_logger().debug(f"工具调用 {i+1}: {call.name} - {call.args}")
+
+            # Guardrail: capability inquiry should be answered directly, not by executing tools.
+            if (
+                iteration == 0
+                and tool_calls
+                and self._is_capability_inquiry(getattr(self, "_latest_user_input", ""))
+            ):
+                _get_logger().warning("检测到能力询问，跳过工具执行，直接返回文本回答。")
+                cleaned_content = self._sanitize_assistant_output(full_content)
+                if not cleaned_content:
+                    cleaned_content = "可以，我支持多 agent 协作，也可以按你的指令创建、协调和汇总多个 agent 的结果。"
+                self.conversation.add_message(MessageRole.ASSISTANT, cleaned_content)
+                if cleaned_content:
+                    self.console.print(Markdown(cleaned_content))
+                await self._trigger_background_review()
+                return cleaned_content
             
             if not tool_calls:
                 # No tool calls - final response

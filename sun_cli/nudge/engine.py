@@ -4,7 +4,7 @@ import asyncio
 from typing import Any, Optional
 
 from ..memory import get_memory_manager
-from ..skills_v2 import get_skill_manager_v2
+from ..skills.library import get_skill_library
 from .review_agent import ReviewAgent
 
 
@@ -129,7 +129,7 @@ class NudgeEngine:
             
             # Review skills
             if review_skills:
-                skill_mgr = get_skill_manager_v2()
+                skill_mgr = get_skill_library()
                 current_skills = skill_mgr.build_index_prompt()
                 result = await review_agent.review_skills(
                     messages_snapshot,
@@ -163,7 +163,7 @@ class NudgeEngine:
     async def _apply_skill_result(self, result: dict, quiet: bool = True) -> None:
         """Apply a skill create/patch action from review agent."""
         try:
-            from ..skills_v2.tools import handle_skill_manage
+            from ..skills.handlers import handle_skill_manage
             
             action = result.get("action", "")
             name = result.get("name", "")

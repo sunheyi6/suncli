@@ -1,4 +1,4 @@
-"""Skill manager for Hermes-style procedural memory (Self-Improving Phase 1 + 4)."""
+"""Skill library manager for Hermes-style procedural memory."""
 
 import re
 import shutil
@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Optional
 
 from ..security.scanner import scan_skill_content
-from .skill import SkillEntry
+from .entry import SkillEntry
 
 
-class SkillManagerV2:
+class SkillLibrary:
     """Manages procedural skills - reusable task playbooks.
     
     Directory structure:
@@ -45,8 +45,6 @@ class SkillManagerV2:
                 encoding="utf-8"
             )
     
-    # ───────────────────── CRUD Operations ─────────────────────
-    
     def create(
         self,
         name: str,
@@ -56,7 +54,6 @@ class SkillManagerV2:
         version: str = "1.0.0"
     ) -> tuple[bool, str]:
         """Create a new skill with security scan. Returns (success, message_or_path)."""
-        # Security scan
         scan = scan_skill_content(content)
         if not scan.allowed:
             return False, f"Security scan blocked this skill ({scan.reason})"
@@ -83,7 +80,6 @@ class SkillManagerV2:
         skill_path = skill_dir / "SKILL.md"
         skill_path.write_text(skill.to_frontmatter(), encoding="utf-8")
         
-        # Update cache and index
         self._cache[name] = skill
         self._update_index()
         
@@ -94,7 +90,6 @@ class SkillManagerV2:
         if name in self._cache:
             return self._cache[name]
         
-        # Search all categories
         for category_dir in self.skills_dir.iterdir():
             if not category_dir.is_dir():
                 continue
@@ -115,20 +110,16 @@ class SkillManagerV2:
         return None
     
     def patch(self, name: str, old_string: str, new_string: str) -> tuple[bool, str]:
-        """Targeted find-and-replace within a skill file (Hermes-style) with security scan."""
+        """Targeted find-and-replace within a skill file with security scan."""
         skill = self.load(name)
         if not skill:
             return False, f"Skill '{name}' not found."
         
-        # Find the file path
         skill_path = self._find_skill_path(name)
         if not skill_path:
             return False, f"Skill '{name}' file not found."
         
-        # Read current content
         current_text = skill_path.read_text(encoding="utf-8")
-        
-        # Fuzzy find and replace
         new_text, match_count = self._fuzzy_replace(current_text, old_string, new_string)
         
         if match_count == 0:
@@ -137,18 +128,15 @@ class SkillManagerV2:
                 f"Expected:\n{old_string[:200]}..."
             )
         
-        # Security scan the patched content
         scan = scan_skill_content(new_text)
         if not scan.allowed:
             return False, f"Security scan blocked this patch ({scan.reason})"
         
-        # Backup before write
         backup_path = skill_path.with_suffix(".md.bak")
         shutil.copy2(skill_path, backup_path)
         
         skill_path.write_text(new_text, encoding="utf-8")
         
-        # Update cache
         updated = SkillEntry.parse(new_text)
         if updated:
             updated.updated_at = datetime.now().isoformat()
@@ -198,15 +186,12 @@ class SkillManagerV2:
         if skill_path:
             skill_path.write_text(skill.to_frontmatter(), encoding="utf-8")
     
-    # ───────────────────── Progressive Loading ─────────────────────
-    
     def build_index_prompt(self) -> str:
         """Build lightweight index for system prompt (only names + descriptions)."""
         skills = self.list_skills(include_archived=False)
         if not skills:
             return ""
         
-        # Group by category
         by_category: dict[str, list[SkillEntry]] = {}
         for skill in skills:
             by_category.setdefault(skill.category, []).append(skill)
@@ -234,8 +219,6 @@ class SkillManagerV2:
             lines.append(skill.content)
         
         return "\n".join(lines)
-    
-    # ───────────────────── Lifecycle (Phase 4) ─────────────────────
     
     def archive_stale(self, max_age_days: int = 90, min_use_count: int = 3) -> list[str]:
         """Auto-archive skills that are old and rarely used."""
@@ -279,8 +262,6 @@ class SkillManagerV2:
             "avg_success_rate": round(avg_success, 2),
         }
     
-    # ───────────────────── Helpers ─────────────────────
-    
     def _sanitize(self, name: str) -> str:
         """Sanitize a name for filesystem use."""
         return re.sub(r'[^a-zA-Z0-9_-]', '_', name).lower()
@@ -293,7 +274,6 @@ class SkillManagerV2:
             for skill_dir in category_dir.iterdir():
                 skill_path = skill_dir / "SKILL.md"
                 if skill_path.exists():
-                    # Quick check by reading frontmatter
                     try:
                         text = skill_path.read_text(encoding="utf-8")
                         match = re.search(r'^name:\s*(.+)$', text, re.MULTILINE)
@@ -305,21 +285,15 @@ class SkillManagerV2:
     
     def _fuzzy_replace(self, text: str, old: str, new: str) -> tuple[str, int]:
         """Fuzzy find-and-replace that tolerates whitespace differences."""
-        # Try exact first
         if old in text:
             return text.replace(old, new, 1), 1
         
-        # Try normalized whitespace
         normalized_text = re.sub(r'\s+', ' ', text)
         normalized_old = re.sub(r'\s+', ' ', old).strip()
         
         if normalized_old in normalized_text:
-            # This is a simplified fallback - exact match preferred
-            # In production, use difflib or similar for better fuzzy matching
             idx = normalized_text.find(normalized_old)
             if idx >= 0:
-                # Find corresponding position in original text
-                # This is approximate
                 return text.replace(old.strip(), new, 1), 1
         
         return text, 0
@@ -337,7 +311,6 @@ class SkillManagerV2:
             "",
         ]
         
-        # Group by category
         by_category: dict[str, list[SkillEntry]] = {}
         for skill in skills:
             by_category.setdefault(skill.category, []).append(skill)
@@ -354,12 +327,12 @@ class SkillManagerV2:
 
 
 # Global instance
-_skill_manager_v2: Optional[SkillManagerV2] = None
+_skill_library: Optional[SkillLibrary] = None
 
 
-def get_skill_manager_v2(root: Path = None) -> SkillManagerV2:
-    """Get or create global skill manager v2."""
-    global _skill_manager_v2
-    if _skill_manager_v2 is None:
-        _skill_manager_v2 = SkillManagerV2(root)
-    return _skill_manager_v2
+def get_skill_library(root: Path = None) -> SkillLibrary:
+    """Get or create global skill library."""
+    global _skill_library
+    if _skill_library is None:
+        _skill_library = SkillLibrary(root)
+    return _skill_library

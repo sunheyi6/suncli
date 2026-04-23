@@ -21,7 +21,7 @@ os.environ["TERM"] = "dumb"
 from rich.console import Console
 
 from ..chat import ChatSession
-from ..skills_v2 import get_skill_manager_v2
+from ..skills.library import get_skill_library
 from ..memory import get_memory_manager
 
 
@@ -106,7 +106,7 @@ async def health_check():
         "version": "0.3.0",
         "features": {
             "self_improving": True,
-            "skills_v2": True,
+            "procedural_skills": True,
             "memory": True,
             "nudge_engine": True,
         }
@@ -149,7 +149,7 @@ async def chat(request: ChatRequest):
 @app.get("/api/skills")
 async def list_skills():
     """List all available skills."""
-    manager = get_skill_manager_v2()
+    manager = get_skill_library()
     skills = manager.list_skills(include_archived=False)
     
     return {

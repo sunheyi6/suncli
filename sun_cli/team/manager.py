@@ -109,7 +109,7 @@ class TeamManager:
         self._save_config()
         
         # Create teammate
-        from ..task.manager import TaskManager  # Avoid circular import
+        from ..task_manager import TaskManager  # Avoid circular import
         
         teammate = Teammate(
             name=name,

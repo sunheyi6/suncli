@@ -1,4 +1,4 @@
-"""Skill data model for Hermes-style procedural memory (Self-Improving Phase 1)."""
+"""Skill data model for Hermes-style procedural memory."""
 
 import re
 from dataclasses import dataclass, field
@@ -17,7 +17,7 @@ class SkillEntry:
     version: str = "1.0.0"
     content: str = ""
     
-    # Lifecycle metadata (Phase 4)
+    # Lifecycle metadata
     last_used: Optional[str] = None
     use_count: int = 0
     success_rate: float = 1.0  # 0.0 - 1.0

@@ -1,26 +1,20 @@
-"""Tool handlers for skill_view and skill_manage (Self-Improving Phase 1)."""
+"""Tool handlers for skill_view and skill_manage."""
 
 from typing import Any
 
-from .manager import get_skill_manager_v2
+from .library import get_skill_library
 
 
 def handle_skill_view(name: str) -> str:
-    """Load and return full content of a skill.
-    
-    Args:
-        name: Name of the skill to view
-    """
-    manager = get_skill_manager_v2()
-    content = manager.load_full(name)
+    """Load and return full content of a skill."""
+    library = get_skill_library()
+    content = library.load_full(name)
     
     if content:
-        # Record that this skill was viewed (counts as usage attempt)
-        manager.record_usage(name, success=True)
+        library.record_usage(name, success=True)
         return f"Skill: {name}\n\n{content}"
     
-    # List available skills
-    skills = manager.list_skills()
+    skills = library.list_skills()
     available = "\n".join(f"  - {s.name}: {s.description}" for s in skills) if skills else "  (none)"
     return f"Skill '{name}' not found.\n\nAvailable skills:\n{available}"
 
@@ -35,25 +29,12 @@ def handle_skill_manage(
     new_string: str = None,
     version: str = "1.0.0"
 ) -> str:
-    """Manage skills (create, update/patch, delete).
-    
-    Skills are procedural memory — reusable approaches for recurring task types.
-    
-    Args:
-        action: One of "create", "patch", "delete", "list", "stats"
-        name: Skill name
-        category: Category for create (e.g., "devops", "software-development")
-        description: Short description
-        content: Full markdown content (for create) — should include Steps, Pitfalls, When to use
-        old_string: Text to find (for patch)
-        new_string: Replacement text (for patch)
-        version: Semantic version string
-    """
-    manager = get_skill_manager_v2()
+    """Manage skills (create, update/patch, delete)."""
+    library = get_skill_library()
     action = action.lower().strip()
     
     if action == "list":
-        skills = manager.list_skills()
+        skills = library.list_skills()
         if not skills:
             return "No skills stored yet."
         
@@ -64,7 +45,7 @@ def handle_skill_manage(
         return "\n".join(lines)
     
     if action == "stats":
-        stats = manager.get_stats()
+        stats = library.get_stats()
         return (
             f"Skill Stats:\n"
             f"  Total: {stats['total']} (active: {stats['active']}, archived: {stats['archived']})\n"
@@ -85,7 +66,7 @@ def handle_skill_manage(
                 "  ## Pitfalls"
             )
         
-        success, msg = manager.create(
+        success, msg = library.create(
             name=name,
             category=category,
             description=description,
@@ -101,11 +82,11 @@ def handle_skill_manage(
         if old_string is None or new_string is None:
             return "Error: 'old_string' and 'new_string' are required for patch."
         
-        success, msg = manager.patch(name, old_string, new_string)
+        success, msg = library.patch(name, old_string, new_string)
         return msg if success else f"Error: {msg}"
     
     if action == "delete":
-        success, msg = manager.delete(name)
+        success, msg = library.delete(name)
         return msg if success else f"Error: {msg}"
     
     return f"Error: Unknown action '{action}'. Use: create, patch, delete, list, stats."
