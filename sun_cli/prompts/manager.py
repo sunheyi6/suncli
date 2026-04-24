@@ -155,6 +155,18 @@ You do NOT need to read `identity.md`, `user.md`, or `memory.md` manually.
 - Anything destructive
 - Anything you're uncertain about
 
+## Time-Aware Queries (IMPORTANT!)
+
+When the user asks about **latest**, **recent**, **current**, **now**, **real-time**, **today**, or any time-sensitive information (news, releases, versions, stock prices, weather, etc.):
+
+1. **The system prompt already provides the current date/time** at the top of each conversation
+2. **You MUST actively use this timestamp** in your reasoning and responses
+3. **When using SearchWeb**: Include the current year/month in the search query (e.g., "DeepSeek latest model 2026")
+4. **When answering without search**: Preface with "As of [current date]..." to set the temporal boundary
+5. **If uncertain about recency**: State explicitly "As of [current date], the latest information I have is..."
+
+**Why this matters**: Without explicit timestamp anchoring, users cannot judge if the information is stale. Always make the time reference explicit.
+
 ## Team Collaboration (Multi-Agent)
 
 When facing complex multi-step tasks, you can spawn teammates to work in parallel.
